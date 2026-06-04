@@ -1,0 +1,53 @@
+cursor.insertBlock();
+
+    QTextCharFormat addrCharFmt;
+    addrCharFmt.setFont(QFont("Arial", 10, QFont::Bold));
+    addrCharFmt.setForeground(QBrush(Qt::black));
+    QTextBlockFormat addrPos;
+    addrPos.setLeftMargin(350);
+    cursor.insertBlock(addrPos);
+    cursor.setCharFormat(addrCharFmt);
+
+    QTextTableFormat addrTableFmt;
+    addrTableFmt.setBorder(0);
+    addrTableFmt.setCellPadding(3);
+    addrTableFmt.setCellSpacing(0);
+    addrTableFmt.setWidth(QTextLength(QTextLength::PercentageLength, 100));
+
+    QTextTable* addrTable = cursor.insertTable(1, 6, addrTableFmt);
+
+    QTextCharFormat textFmt;
+    textFmt.setFont(QFont("Arial", 10, QFont::Bold));
+    textFmt.setForeground(QBrush(Qt::black));
+
+    QTextCharFormat boxFmt;
+    boxFmt.setFont(QFont("Arial", 12));
+    boxFmt.setForeground(QBrush(Qt::black));
+
+    QString postal = m_postalCode.isEmpty() ? "    " : m_postalCode;
+    QTextBlockFormat localCenterFmt;
+    localCenterFmt.setAlignment(Qt::AlignCenter);
+
+    for (int i = 0; i < 4; ++i) {
+        QTextCursor cell = addrTable->cellAt(0, i).firstCursorPosition();
+        cell.setBlockFormat(localCenterFmt);
+        cell.setCharFormat(boxFmt);
+        if (i < postal.length() && i < 4) {
+            cell.insertText(QString(postal[i]));
+        } else {
+            cell.insertText(" ");
+        }
+    }
+
+    QTextCursor cell4 = addrTable->cellAt(0, 4).firstCursorPosition();
+    cell4.setCharFormat(textFmt);
+    cell4.insertText("الترقيم البريدي : ");
+
+    QTextCursor cell5 = addrTable->cellAt(0, 5).firstCursorPosition();
+    cell5.setCharFormat(textFmt);
+    cell5.insertText("العنوان ou المقر الإ اجتماعي : " + m_address);
+    if (!m_city.isEmpty()) {
+        cell5.insertText(", ");
+        cell5.insertText(m_city);
+    }
+}

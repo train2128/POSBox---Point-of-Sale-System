@@ -1,0 +1,340 @@
+/* ============================================
+   POSBox 2.0 - Universal Stylesheet (LIGHT THEME)
+   ============================================ */
+
+/* ============================================
+   MAIN WINDOW
+   ============================================ */
+QMainWindow {
+    background-color: #f5f7f9;
+}
+
+QWidget#centralwidget {
+    background-image: url(:/Backgrounds/images/Backgrounds/main_bg_light.png);
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+}
+
+/* ============================================
+   DIALOGS
+   ============================================ */
+QDialog {
+    background-color: #ffffff;
+    color: #2c3e50;
+}
+
+/* ============================================
+   LABELS
+   ============================================ */
+QLabel {
+    color: #2c3e50;
+    font-size: 13px;
+    font-weight: bold;
+}
+
+/* ============================================
+   INPUT FIELDS (QLineEdit)
+   ============================================ */
+QLineEdit {
+    background-color: #ffffff;
+    color: #333333;
+    border: 2px solid #dcdfe6;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    selection-background-color: #4A90E2;
+    selection-color: white;
+}
+
+QLineEdit:hover {
+    background-color: #fafafa;
+    border: 2px solid #c0c4cc;
+}
+
+QLineEdit:focus {
+    background-color: #ffffff;
+    border: 2px solid #4A90E2;
+    outline: none;
+}
+
+QLineEdit:disabled {
+    background-color: #f5f7fa;
+    color: #c0c4cc;
+    border: 2px solid #e4e7ed;
+}
+
+QLineEdit::placeholder {
+    color: #a8abb2;
+    font-style: italic;
+}
+
+/* Validation states */
+QLineEdit[state="valid"] {
+    border: 2px solid #67c23a;
+    background-color: rgba(103, 194, 58, 0.05);
+}
+
+QLineEdit[state="invalid"] {
+    border: 2px solid #f56c6c;
+    background-color: rgba(245, 108, 108, 0.05);
+}
+
+/* ============================================
+   BUTTONS - BASE
+   ============================================ */
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                              stop:0 #ffffff,
+                              stop:1 #f2f2f2);
+    color: #606266;
+    border: 1px solid #dcdfe6;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: bold;
+    font-size: 13px;
+    min-height: 20px;
+}
+
+QPushButton:hover {
+    background: #f5f7fa;
+    border: 1px solid #4A90E2;
+    color: #4A90E2;
+}
+
+QPushButton:pressed {
+    background: #e4e7ed;
+    padding-top: 9px;
+    padding-bottom: 7px;
+}
+
+QPushButton:disabled {
+    background: #f5f7fa;
+    color: #c0c4cc;
+    border: 1px solid #e4e7ed;
+}
+
+/* ============================================
+   BUTTONS - COLORED VARIANTS
+   ============================================ */
+
+/* Green - Add */
+QPushButton[btnStyle="add"] {
+    background: #67c23a;
+    border: 1px solid #67c23a;
+    color: white;
+}
+
+QPushButton[btnStyle="add"]:hover {
+    background: #85ce61;
+    border: 1px solid #85ce61;
+}
+
+/* Blue - Edit */
+QPushButton[btnStyle="edit"] {
+    background: #409eff;
+    border: 1px solid #409eff;
+    color: white;
+}
+
+/* Red - Delete */
+QPushButton[btnStyle="delete"] {
+    background: #f56c6c;
+    border: 1px solid #f56c6c;
+    color: white;
+}
+
+/* ============================================
+   TABLES (QTableWidget, QTableView)
+   ============================================ */
+QTableWidget, QTableView {
+    background-color: #ffffff;
+    alternate-background-color: #fafafa;
+    color: #606266;
+    font-size: 13px;
+    gridline-color: #ebeef5;
+    border: 1px solid #dcdfe6;
+    border-radius: 10px;
+    outline: 0;
+}
+
+QHeaderView::section {
+    background-color: #f5f7fa;
+    color: #909399;
+    padding: 6px;
+    border: none;
+    border-bottom: 1px solid #ebeef5;
+    font-weight: bold;
+}
+
+QTableWidget::item:selected, QTableView::item:selected {
+    background-color: #ecf5ff;
+    color: #409eff;
+}
+
+/* ============================================
+   COMBO BOXES
+   ============================================ */
+QComboBox {
+    background-color: #ffffff;
+    color: #606266;
+    border: 2px solid #dcdfe6;
+    border-radius: 6px;
+    padding: 7px 12px;
+}
+
+QComboBox::drop-down {
+    background-color: #f5f7fa;
+    border-left: 1px solid #dcdfe6;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    color: #606266;
+    border: 1px solid #dcdfe6;
+    selection-background-color: #ecf5ff;
+    selection-color: #409eff;
+}
+
+/* ============================================
+   GROUP BOXES
+   ============================================ */
+QGroupBox {
+    color: #2c3e50;
+    border: 1px solid #ebeef5;
+    background-color: rgba(0, 0, 0, 0.01);
+}
+
+QGroupBox::title {
+    color: #909399;
+}
+
+/* Financial app specific group boxes */
+QGroupBox#recExpBox,
+QGroupBox#expensesBox {
+    color: #2c3e50;
+    border: 1px solid #ebeef5;
+    background-color: rgba(0, 0, 0, 0.01);
+}
+
+QGroupBox#recExpBox::title,
+QGroupBox#expensesBox::title {
+    color: #909399;
+}
+
+QGroupBox#recExpBox QScrollArea,
+QGroupBox#expensesBox QScrollArea {
+    background: transparent;
+    border: none;
+}
+
+QGroupBox#recExpBox QScrollArea > QWidget,
+QGroupBox#expensesBox QScrollArea > QWidget {
+    background-color: rgba(0, 0, 0, 0.02);
+    border-radius: 4px;
+}
+
+/* ============================================
+   TAB WIDGET
+   ============================================ */
+QTabWidget::pane {
+    background-color: #ffffff;
+    border: 1px solid #dcdfe6;
+}
+
+QTabBar::tab {
+    background: #f5f7fa;
+    color: #909399;
+    border: 1px solid #dcdfe6;
+    border-bottom: none;
+    padding: 8px 18px;
+}
+
+QTabBar::tab:selected {
+    background: #ffffff;
+    color: #409eff;
+    border-bottom: 1px solid #ffffff;
+}
+
+/* ============================================
+   SCROLL AREA (Light Glass Effect)
+   ============================================ */
+QScrollArea > QWidget {
+    background-color: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+/* Register app - items scroll area */
+QScrollArea#itemsScrollArea,
+QWidget#itemsScrollContents {
+    background: transparent;
+    border: none;
+}
+
+QWidget#itemsScrollContents {
+    background-color: rgba(255, 255, 255, 0.8);
+    border-radius: 8px;
+}
+
+/* Tickets app - ticket cart scroll area */
+QScrollArea#ticketCart,
+QWidget#ticketCartContents {
+    background: transparent;
+    border: none;
+}
+
+QWidget#ticketCartContents {
+    background-color: rgba(255, 255, 255, 0.8);
+    border-radius: 8px;
+}
+
+/* ============================================
+   REGISTER APP - CART ITEMS
+   ============================================ */
+.cart-item-widget {
+    background-color: #ffffff;
+    border-bottom: 1px solid #f2f6fc;
+}
+
+.cart-item-quantity {
+    background-color: #f5f7fa;
+    border: 1px solid #dcdfe6;
+    color: #333333;
+}
+
+/* ============================================
+   USER LABEL — LIGHT THEME
+   Overrides the generic QLabel rule so the
+   username is visible on the light top bar.
+   ============================================ */
+QLabel#userLabel {
+    color: #ffffff;
+    background-color: rgba(0,0,0,0.18);
+    border-radius: 4px;
+    padding: 2px 8px;
+}
+
+/* ============================================
+   ICON BUTTONS — LIGHT THEME
+   Uses black icon variants for visibility
+   on the light background.
+   ============================================ */
+QPushButton#logoutBtn {
+    qproperty-icon: url(:/Assets/images/Assets/logout_black.png);
+    qproperty-iconSize: 22px 22px;
+}
+
+QPushButton#notificationBtn {
+    qproperty-icon: url(:/Assets/images/Assets/notification_black.png);
+    qproperty-iconSize: 22px 22px;
+}
+
+QPushButton#discountBtn {
+    qproperty-icon: url(:/Assets/images/Assets/discount_black.png);
+    qproperty-iconSize: 22px 22px;
+}
+
+QPushButton[btnStyle="variantDelete"] {
+    qproperty-icon: url(:/Assets/images/Assets/delete_black.png);
+    qproperty-iconSize: 16px 16px;
+}

@@ -1,0 +1,53 @@
+<RCC>
+    <qresource prefix="/styles">
+        <file>styles/app_styles.qss</file>
+        <file>styles/app_styles_light.qss</file>
+        <file>styles/app_styles_dark.qss</file>
+        <file>styles/app_styles_font_large.qss</file>
+        <file>styles/app_styles_font_medium.qss</file>
+        <file>styles/app_styles_font_small.qss</file>
+    </qresource>
+    <qresource prefix="/Login_icons">
+        <file>images/Login_Resources/user.png</file>
+        <file>images/Login_Resources/pass.png</file>
+        <file>images/Login_Resources/login.png</file>
+    </qresource>
+    <qresource prefix="/Backgrounds">
+        <file>images/Login_Resources/login_bg.png</file>
+        <file>images/Backgrounds/main_bg.png</file>
+        <file>images/Backgrounds/main_bg_caramel.png</file>
+        <file>images/Backgrounds/main_bg_black.png</file>
+        <file>images/Backgrounds/main_bg_blue.png</file>
+    </qresource>
+    <qresource prefix="/Assets">
+        <file>images/Assets/discount.png</file>
+        <file>images/Assets/down_arrow.png</file>
+        <file>images/Assets/logout.png</file>
+        <file>images/Assets/notification_active.png</file>
+        <file>images/Assets/notification.png</file>
+        <file>images/Assets/product_default.png</file>
+        <file>images/Assets/up_arrow.png</file>
+        <file>images/Assets/delete.png</file>
+        <file>images/Assets/delete_black.png</file>
+        <file>images/Assets/discount_black.png</file>
+        <file>images/Assets/down_arrow_black.png</file>
+        <file>images/Assets/logout_black.png</file>
+        <file>images/Assets/notification_active_black.png</file>
+        <file>images/Assets/notification_black.png</file>
+        <file>images/Assets/up_arrow_black.png</file>
+        <file>images/Assets/refresh.png</file>
+        <file>images/Assets/refresh_black.png</file>
+    </qresource>
+    <qresource prefix="/Icons">
+        <file>images/icons/tickets_icon_colored.png</file>
+        <file>images/icons/financial_icon_colored.png</file>
+        <file>images/icons/settings_icon_colored.png</file>
+        <file>images/icons/financial_icon.ico</file>
+        <file>images/icons/settings_icon.ico</file>
+        <file>images/icons/tickets_icon.ico</file>
+        <file>images/icons/inventory_icon_colored.png</file>
+        <file>images/icons/inventory_icon.ico</file>
+        <file>images/icons/register_icon_colored.png</file>
+        <file>images/icons/register_icon.ico</file>
+    </qresource>
+</RCC>

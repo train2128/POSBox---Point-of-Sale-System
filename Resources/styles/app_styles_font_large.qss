@@ -1,0 +1,81 @@
+/* ============================================
+   POSBox - Font Overlay: Large (17px baseline)
+   Loaded on top of the color theme file.
+   ============================================ */
+
+QLabel {
+    font-size: 17px;
+}
+
+QLineEdit {
+    font-size: 17px;
+    padding: 10px 16px;
+}
+
+QPushButton {
+    font-size: 17px;
+    padding: 11px 20px;
+    min-height: 28px;
+}
+
+QComboBox {
+    font-size: 17px;
+    padding: 9px 16px;
+}
+
+QSpinBox, QDoubleSpinBox {
+    font-size: 17px;
+    padding: 8px 12px;
+    min-height: 28px;
+}
+
+QTableWidget, QTableView {
+    font-size: 17px;
+}
+
+QHeaderView::section {
+    font-size: 17px;
+    padding: 10px;
+}
+
+QTabBar::tab {
+    font-size: 17px;
+    padding: 10px 20px;
+}
+
+QDateEdit {
+    font-size: 17px;
+    padding: 8px 14px;
+}
+
+/* Tables header override (Tickets app) */
+QTableView QHeaderView::section {
+    font-size: 15px;
+    padding: 10px 14px;
+}
+
+/* Cart */
+.cart-item-name  { font-size: 17px; }
+.cart-item-price { font-size: 17px; }
+.cart-item-remove { font-size: 20px; }
+
+/* Discount items */
+.discount-separator-label { font-size: 15px; }
+.discount-name   { font-size: 17px; }
+.discount-amount { font-size: 17px; }
+
+/* Dialogs */
+QLabel#variant-picker-title  { font-size: 18px; }
+QListWidget#variant-picker-list { font-size: 17px; }
+QListWidget#variant-picker-list::item { padding: 12px 16px; }
+
+QLabel#custom-item-title { font-size: 18px; }
+QLabel#custom-item-label { font-size: 16px; }
+QLineEdit#custom-item-field { font-size: 17px; padding: 8px 14px; }
+
+QLabel#discount-dialog-title         { font-size: 18px; }
+QLabel#discount-dialog-section-label { font-size: 15px; }
+QLabel#discount-dialog-hint          { font-size: 15px; }
+QLabel#discount-dialog-preview       { font-size: 17px; }
+QComboBox#discount-dialog-combo      { font-size: 17px; padding: 8px 14px; }
+QLineEdit#discount-dialog-input      { font-size: 17px; padding: 8px 14px; }
