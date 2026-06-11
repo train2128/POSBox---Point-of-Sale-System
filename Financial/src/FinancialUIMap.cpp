@@ -10,6 +10,7 @@
 #include <QHeaderView>
 #include <QIcon>
 #include <QDate>
+#include <QLocale>
 #include <QDebug>
 
 // ── Static member initialization ──────────────────────────────────────────────
@@ -48,19 +49,19 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     notificationBtn->setIcon(QIcon(StyleManager::iconPath("notification")));
     notificationBtn->setIconSize(QSize(22, 22));
     notificationBtn->setFixedSize(36, 36);
-    notificationBtn->setToolTip("Notifications");
+    notificationBtn->setToolTip("");
 
     logoutBtn->setText("");
     logoutBtn->setIcon(QIcon(StyleManager::iconPath("logout")));
     logoutBtn->setIconSize(QSize(22, 22));
     logoutBtn->setFixedSize(36, 36);
-    logoutBtn->setToolTip("Logout");
+    logoutBtn->setToolTip("");
 
     // ── Tab labels ────────────────────────────────────────────────────────────
-    ui->tabwidget->setTabText(0, "Overview");
-    ui->tabwidget->setTabText(1, "Tax & Yearly");
-    ui->tabwidget->setTabText(2, "Documents");
-    ui->tabwidget->setTabText(3, "Settings");
+    ui->tabwidget->setTabText(0, "");
+    ui->tabwidget->setTabText(1, "");
+    ui->tabwidget->setTabText(2, "");
+    ui->tabwidget->setTabText(3, "");
     ui->tabwidget->setCurrentIndex(0);
 
     // ── Tab 1 — Overview ──────────────────────────────────────────────────────
@@ -74,15 +75,10 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     deleteExpenseBtn = ui->deleteExpenseBtn;
     expensesTable    = ui->expensesTable;
 
-    const QStringList months = {
-        "January", "February", "March", "April", "May", "June",
-        "July", "August", "September", "October", "November", "December"
-    };
-
     // Month selector
     monthSelect->clear();
     for (int i = 0; i < 12; ++i)
-        monthSelect->addItem(months[i], i + 1);
+        monthSelect->addItem(QLocale::system().monthName(i + 1, QLocale::LongFormat), i + 1);
     monthSelect->setCurrentIndex(QDate::currentDate().month() - 1);
 
     // Year selector
@@ -96,7 +92,7 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     monthlyTable->setRowCount(1);
     monthlyTable->setColumnCount(5);
     monthlyTable->setHorizontalHeaderLabels({
-        "Income", "Cost", "Benefit", "Expenses", "Rest"
+        "", "", "", "", ""
     });
     monthlyTable->verticalHeader()->setVisible(false);
     monthlyTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -114,19 +110,17 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     // ── Weekly table — 8 rows (Mon-Sun + Total), 3 columns ───────────────────
     weeklyTable->setRowCount(8);
     weeklyTable->setColumnCount(3);
-    weeklyTable->setHorizontalHeaderLabels({"Day", "Income", "Expenses"});
+    weeklyTable->setHorizontalHeaderLabels({"", "", ""});
     weeklyTable->verticalHeader()->setVisible(false);
     weeklyTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     weeklyTable->setSelectionMode(QAbstractItemView::NoSelection);
     weeklyTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     weeklyTable->setShowGrid(true);
 
-    const QStringList days = {
-        "Sunday", "Monday", "Tuesday", "Wednesday",
-        "Thursday", "Friday", "Saturday", "Total"
-    };
-    for (int row = 0; row < 8; ++row) {
-        QTableWidgetItem* dayItem = new QTableWidgetItem(days[row]);
+    // Day names: Sunday=7, Monday=1, ..., Saturday=6 per Qt locale
+    const int dayMapping[] = {7, 1, 2, 3, 4, 5, 6};
+    for (int row = 0; row < 7; ++row) {
+        QTableWidgetItem* dayItem = new QTableWidgetItem(QLocale::system().dayName(dayMapping[row], QLocale::LongFormat));
         dayItem->setTextAlignment(Qt::AlignCenter);
         weeklyTable->setItem(row, FinancialConstants::COL_WEEKLY_DAY, dayItem);
         for (int col = 1; col < 3; ++col) {
@@ -135,11 +129,22 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
             weeklyTable->setItem(row, col, valItem);
         }
     }
+    // Total row
+    {
+        QTableWidgetItem* totalItem = new QTableWidgetItem("");
+        totalItem->setTextAlignment(Qt::AlignCenter);
+        weeklyTable->setItem(7, FinancialConstants::COL_WEEKLY_DAY, totalItem);
+        for (int col = 1; col < 3; ++col) {
+            QTableWidgetItem* valItem = new QTableWidgetItem("—");
+            valItem->setTextAlignment(Qt::AlignCenter);
+            weeklyTable->setItem(7, col, valItem);
+        }
+    }
 
     // ── Top Sales table — 3 rows, 3 columns ─────────────────────────────────
     topSalesTable->setRowCount(3);
     topSalesTable->setColumnCount(3);
-    topSalesTable->setHorizontalHeaderLabels({"#", "Product", "Qty"});
+    topSalesTable->setHorizontalHeaderLabels({"", "", ""});
     topSalesTable->verticalHeader()->setVisible(false);
     topSalesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     topSalesTable->setSelectionMode(QAbstractItemView::NoSelection);
@@ -158,11 +163,11 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     }
 
     // GroupBox titles
-    expensesBox->setTitle("One-time Expenses");
+    expensesBox->setTitle("");
 
     // One-time expenses table
     expensesTable->setColumnCount(3);
-    expensesTable->setHorizontalHeaderLabels({"Name", "Amount", "Date"});
+    expensesTable->setHorizontalHeaderLabels({"", "", ""});
     expensesTable->verticalHeader()->setVisible(false);
     expensesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     expensesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -171,12 +176,12 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     expensesTable->setShowGrid(false);
     expensesTable->setAlternatingRowColors(true);
 
-    addExpenseBtn->setText("Add Expense");
+    addExpenseBtn->setText("");
     addExpenseBtn->setProperty("btnStyle", "add");
     addExpenseBtn->style()->unpolish(addExpenseBtn);
     addExpenseBtn->style()->polish(addExpenseBtn);
 
-    deleteExpenseBtn->setText("Delete");
+    deleteExpenseBtn->setText("");
     deleteExpenseBtn->setProperty("btnStyle", "delete");
     deleteExpenseBtn->style()->unpolish(deleteExpenseBtn);
     deleteExpenseBtn->style()->polish(deleteExpenseBtn);
@@ -188,7 +193,7 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     yearlyTable->setRowCount(13);
     yearlyTable->setColumnCount(5);
     yearlyTable->setHorizontalHeaderLabels({
-        "Month", "Total Income", "Total Cost", "Total Expenses", "Total Benefit"
+        "", "", "", "", ""
     });
     yearlyTable->verticalHeader()->setVisible(false);
     yearlyTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -199,7 +204,7 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
     yearlyTable->setAlternatingRowColors(true);
 
     for (int row = 0; row < 12; ++row) {
-        QTableWidgetItem* monthItem = new QTableWidgetItem(months[row]);
+        QTableWidgetItem* monthItem = new QTableWidgetItem(QLocale::system().monthName(row + 1, QLocale::LongFormat));
         monthItem->setTextAlignment(Qt::AlignCenter);
         yearlyTable->setItem(row, FinancialConstants::COL_YEAR_MONTH, monthItem);
         for (int col = 1; col < 5; ++col) {
@@ -208,7 +213,7 @@ void FinancialUIMap::initialize(Ui::FinancialWindow* ui)
             yearlyTable->setItem(row, col, valItem);
         }
     }
-    QTableWidgetItem* totalLabel = new QTableWidgetItem("Total");
+    QTableWidgetItem* totalLabel = new QTableWidgetItem("");
     QFont totalFont = totalLabel->font();
     totalFont.setBold(true);
     totalFont.setPointSize(totalFont.pointSize() + 2);

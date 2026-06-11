@@ -20,6 +20,7 @@ HEADERS += \
     include/QueryRepository.h \
     include/ChangeNotifier.h \
     include/CommonConfig.h \
+    include/CountryData.h \
     include/IAuthenticationProvider.h \
     include/LocalDatabaseAuth.h \
     include/RegisterLock.h \
@@ -37,7 +38,8 @@ HEADERS += \
     include/NotificationSettings.h \
     include/NotificationPanel.h \
     include/ActiveSessionManager.h \
-    include/LogoutManager.h
+    include/LogoutManager.h \
+    include/TranslationManager.h
 
 # Sources
 SOURCES += \
@@ -47,6 +49,7 @@ SOURCES += \
     src/QueryRepository.cpp \
     src/ChangeNotifier.cpp \
     src/CommonConfig.cpp \
+    src/CountryData.cpp \
     src/LocalDatabaseAuth.cpp \
     src/UserSession.cpp \
     src/SessionManager.cpp \
@@ -59,7 +62,8 @@ SOURCES += \
     src/NotificationSettings.cpp \
     src/NotificationPanel.cpp \
     src/ActiveSessionManager.cpp \
-    src/LogoutManager.cpp
+    src/LogoutManager.cpp \
+    src/TranslationManager.cpp
 
 # Forms
 FORMS += \

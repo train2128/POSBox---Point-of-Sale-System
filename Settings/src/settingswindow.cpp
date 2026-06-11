@@ -14,6 +14,9 @@
 #include "PermissionManager.h"
 #include "AccessControl.h"
 #include "LogoutManager.h"
+#include "CountryData.h"
+#include "Prefixes.h"
+#include "TranslationManager.h"
 #include <QApplication>
 #include <QCursor>
 #include <QLabel>
@@ -53,6 +56,9 @@ SettingsWindow::SettingsWindow(UserSession* session, DatabaseManager* db, QWidge
     setupUI();
     setupValidators();
     setupConnections();
+    loadCountryCurrency();
+    populateLanguageCombo();
+    loadLanguage();
     loadProfile();
     loadUsers();
     loadAppSettings();
@@ -75,8 +81,6 @@ SettingsWindow::~SettingsWindow()
 
 void SettingsWindow::setupUI()
 {
-    setWindowTitle("POSBox - Settings");
-
     if (centralWidget()) {
         centralWidget()->setObjectName("centralwidget");
     }
@@ -84,89 +88,8 @@ void SettingsWindow::setupUI()
     // Always open on the first tab
     ui->tabWidget->setCurrentIndex(0);
 
-    // Tab titles
-    ui->tabWidget->setTabText(0, "Shop Profile");
-    ui->tabWidget->setTabText(1, "Users");
-    ui->tabWidget->setTabText(2, "App Settings");
-    ui->tabWidget->setTabText(3, "Printer");
-    ui->tabWidget->setTabText(4, "Notifications");
-
-    // userPermissions titles
-    ui->themeSettings->setTitle("Theme");
-    ui->databaseSettings->setTitle("Database");
-
-    // Button labels
-    ui->saveSettingsBtn->setText("Save");
-    ui->cancelSettingsBtn->setText("Cancel");
-    ui->logoutBtn->setText("Logout");
-    ui->userAddBtn->setText("Add");
-    ui->userEditBtn->setText("Edit");
-    ui->userDeleteBtn->setText("Delete");
-    ui->syncPathBtn->setText("Browse");
-    ui->backupBtn->setText("Backup");
-    ui->restoreBtn->setText("Import");
-    ui->portRefreshBtn->setText("Refresh");
-    ui->savePrinterBtn->setText("Save");
-    ui->printTestBtn->setText("Test Print");
-
-    // Label texts
-    ui->shopNameLabel->setText("Shop Name");
-    ui->taxLabel->setText("Tax ID");
-    ui->adressLable->setText("Address");
-    ui->phoneLabel->setText("Phone");
-    ui->emailLabel->setText("Email");
-    ui->websiteLabel->setText("Website");
-    ui->facebookLabel->setText("Facebook");
-    ui->instagramLabel->setText("Instagram");
-    ui->tiktokLabel->setText("TikTok");
-    ui->whatsappLabel->setText("WhatsApp");
-    ui->baudRateLabel->setText("Baud Rate");
-    ui->dataBitsLabel->setText("Data Bits");
-    ui->parityLabel->setText("Parity");
-    ui->stopBitsLabel->setText("Stop Bits");
-    ui->flowLabel->setText("Flow Control");
-    ui->latencyLabel->setText("Latency");
-    ui->lastSyncLabel->setText("Last sync: Never");
-    ui->printerStatusLabel->setText("Status: Not connected");
-
-    // ── Notifications tab ─────────────────────────────────────────────────────
-    ui->openTicketLabel->setText("Open Tickets (days before + frequency):");
-    ui->outStockLabel->setText("Out of Stock:");
-    ui->nearOutStockLabel->setText("Nearly Out of Stock:");
-
-    // Populate day combos (1-30)
-    for (int i = 1; i <= 30; ++i) {
-        ui->openTicketDays->addItem(QString::number(i), i);
-        ui->openTicketFrequancy->addItem(QString::number(i), i);
-    }
-
-    // Placeholder texts
-    ui->shopNameField->setPlaceholderText("Shop name");
-    ui->taxField->setPlaceholderText("Tax ID");
-    ui->adressField->setPlaceholderText("Address");
-    ui->cityField->setPlaceholderText("City");
-    ui->postalField->setPlaceholderText(QString("%1 digits").arg(SettingsConstants::POSTAL_DIGIT_COUNT));
-    ui->emailField->setPlaceholderText("example@domain.com");
-    ui->websiteField->setPlaceholderText("https://");
-    ui->facebookField->setPlaceholderText("Facebook URL");
-    ui->instagramField->setPlaceholderText("Instagram URL");
-    ui->tiktokField->setPlaceholderText("TikTok URL");
-    ui->whatsappField->setPlaceholderText("WhatsApp number");
-    ui->syncPathPath->setPlaceholderText("Sync folder path");
-    ui->syncPathPath->setReadOnly(true);
-
-    // ── Register settings ─────────────────────────────────────────────────────
-    ui->registerSettings->setTitle("Register");
-    ui->OOSLabel->setText("Show out of stock items in Register:");
-    ui->OOSCheckBox->setText("");
-
-    // ── Printer enable ────────────────────────────────────────────────────────
-    ui->printerEnableLabel->setText("Enable Thermal Printer:");
-    ui->printerEnableBox->setText("");
-
     // Center text in all profile fields
     ui->shopNameField->setAlignment(Qt::AlignCenter);
-    ui->taxField->setAlignment(Qt::AlignCenter);
     ui->adressField->setAlignment(Qt::AlignCenter);
     ui->cityField->setAlignment(Qt::AlignCenter);
     ui->postalField->setAlignment(Qt::AlignCenter);
@@ -176,16 +99,13 @@ void SettingsWindow::setupUI()
     ui->instagramField->setAlignment(Qt::AlignCenter);
     ui->tiktokField->setAlignment(Qt::AlignCenter);
     ui->whatsappField->setAlignment(Qt::AlignCenter);
-
     ui->phoneField->setAlignment(Qt::AlignCenter);
-    ui->phoneField->setPlaceholderText(QString("%1 digits").arg(SettingsConstants::PHONE_DIGIT_COUNT));
 
     // Logo label
     ui->logoImageLabel->setFixedSize(SettingsConstants::LOGO_IMAGE_SIZE,
                                      SettingsConstants::LOGO_IMAGE_SIZE);
     ui->logoImageLabel->setCursor(QCursor(Qt::PointingHandCursor));
     ui->logoImageLabel->setAlignment(Qt::AlignCenter);
-    ui->logoImageLabel->setText("Click to\nupload logo");
     ui->logoImageLabel->setStyleSheet(
         "QLabel {"
         "  background-color: #3d3d3d;"
@@ -218,11 +138,24 @@ void SettingsWindow::setupUI()
         }
     }
 
+    // ── Notifications tab — populate day combos (1-30) ───────────────────────
+    for (int i = 1; i <= 30; ++i) {
+        ui->openTicketDays->addItem(QString::number(i), i);
+        ui->openTicketFrequancy->addItem(QString::number(i), i);
+    }
+
+    // Register settings — checkbox behavior
+    ui->OOSCheckBox->setText("");
+    ui->printerEnableBox->setText("");
+
+    // Regional — populate combos
+    populateCountryCurrencyCombos();
+
+    // Sync path field
+    ui->syncPathPath->setReadOnly(true);
+
     // ---- Users tab ----
     m_usersModel = new QStandardItemModel(0, 5, this);
-    m_usersModel->setHorizontalHeaderLabels({
-        "Username", "Display Name", "Role", "Status", "Last Login"
-    });
 
     ui->usersTable->setModel(m_usersModel);
     ui->usersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -240,20 +173,8 @@ void SettingsWindow::setupUI()
     ui->userEditBtn->setProperty("btnStyle", "edit");
     ui->userDeleteBtn->setProperty("btnStyle", "delete");
 
-    // Permissions panel setup
-    ui->userPermissions->setTitle("Permissions");
-    ui->pWithdrawLabel->setText("Withdraw Cash:");
-    ui->pDeleteTicketLabel->setText("Delete Ticket:");
-    ui->pDeleteProductLabel->setText("Delete Products:");
-    ui->pAddCatLabel->setText("Add Categories:");
-    ui->pDiscountsLabel->setText("Manage Discounts:");
-    ui->pExpensesLabel->setText("Edit Expenses:");
-    ui->pRecurringLabel->setText("Pay Recurring:");
-    ui->permissionsSaveBtn->setText("Save Permissions");
-
     ui->userPermissions->setVisible(false);
 
-    // Store checkboxes in a map for easy access
     // Disable Edit/Delete buttons initially
     ui->userEditBtn->setEnabled(false);
     ui->userDeleteBtn->setEnabled(false);
@@ -264,8 +185,117 @@ void SettingsWindow::setupUI()
     ui->fontSelect->setCurrentIndex(1);
     ui->bgSelect->addItems({"Default", "Caramel", "Black", "Blue"});
 
+    // Apply all translatable text
+    retranslateUi();
+
     updateUserDisplay();
     showMaximized();
+}
+
+void SettingsWindow::retranslateUi()
+{
+    setWindowTitle(tr("POSBox - Settings"));
+
+    // Tab titles
+    ui->tabWidget->setTabText(0, tr("Shop Profile"));
+    ui->tabWidget->setTabText(1, tr("Users"));
+    ui->tabWidget->setTabText(2, tr("App Settings"));
+    ui->tabWidget->setTabText(3, tr("Printer"));
+    ui->tabWidget->setTabText(4, tr("Notifications"));
+
+    // Group box titles
+    ui->themeSettings->setTitle(tr("Theme"));
+    ui->databaseSettings->setTitle(tr("Database"));
+    ui->registerSettings->setTitle(tr("Register"));
+    ui->regionalSettings->setTitle(tr("Country & Currency"));
+    ui->languageSettings->setTitle(tr("Language"));
+    ui->userPermissions->setTitle(tr("Permissions"));
+
+    // Button labels
+    ui->saveSettingsBtn->setText(tr("Save"));
+    ui->cancelSettingsBtn->setText(tr("Cancel"));
+    ui->logoutBtn->setText(tr("Logout"));
+    ui->userAddBtn->setText(tr("Add"));
+    ui->userEditBtn->setText(tr("Edit"));
+    ui->userDeleteBtn->setText(tr("Delete"));
+    ui->syncPathBtn->setText(tr("Browse"));
+    ui->backupBtn->setText(tr("Backup"));
+    ui->restoreBtn->setText(tr("Import"));
+    ui->portRefreshBtn->setText(tr("Refresh"));
+    ui->savePrinterBtn->setText(tr("Save"));
+    ui->printTestBtn->setText(tr("Test Print"));
+    ui->permissionsSaveBtn->setText(tr("Save Permissions"));
+
+    // Label texts — Shop Profile
+    ui->shopNameLabel->setText(tr("Shop Name"));
+    ui->adressLable->setText(tr("Address"));
+    ui->phoneLabel->setText(tr("Phone"));
+    ui->emailLabel->setText(tr("Email"));
+    ui->websiteLabel->setText(tr("Website"));
+    ui->facebookLabel->setText(tr("Facebook"));
+    ui->instagramLabel->setText(tr("Instagram"));
+    ui->tiktokLabel->setText(tr("TikTok"));
+    ui->whatsappLabel->setText(tr("WhatsApp"));
+
+    // Label texts — Printer
+    ui->baudRateLabel->setText(tr("Baud Rate"));
+    ui->dataBitsLabel->setText(tr("Data Bits"));
+    ui->parityLabel->setText(tr("Parity"));
+    ui->stopBitsLabel->setText(tr("Stop Bits"));
+    ui->flowLabel->setText(tr("Flow Control"));
+    ui->latencyLabel->setText(tr("Latency"));
+    ui->lastSyncLabel->setText(tr("Last sync: Never"));
+    ui->printerStatusLabel->setText(tr("Status: Not connected"));
+
+    // Label texts — Notifications
+    ui->openTicketLabel->setText(tr("Open Tickets (days before + frequency):"));
+    ui->outStockLabel->setText(tr("Out of Stock:"));
+    ui->nearOutStockLabel->setText(tr("Nearly Out of Stock:"));
+
+    // Label texts — Register & Printer enable
+    ui->OOSLabel->setText(tr("Show out of stock items in Register:"));
+    ui->printerEnableLabel->setText(tr("Enable Thermal Printer:"));
+
+    // Label texts — Regional
+    ui->countryLabel->setText(tr("Country"));
+    ui->currencyLabel->setText(tr("Currency"));
+    ui->phonePrefixLabel->setText(tr("Phone prefix:"));
+
+    // Label texts — Language
+    ui->languageLabel->setText(tr("App Language"));
+
+    // Placeholder texts
+    ui->shopNameField->setPlaceholderText(tr("Shop name"));
+    ui->adressField->setPlaceholderText(tr("Address"));
+    ui->cityField->setPlaceholderText(tr("City"));
+    ui->postalField->setPlaceholderText(tr("%1 digits").arg(SettingsConstants::POSTAL_DIGIT_COUNT));
+    ui->emailField->setPlaceholderText(tr("example@domain.com"));
+    ui->websiteField->setPlaceholderText(tr("https://"));
+    ui->facebookField->setPlaceholderText(tr("Facebook URL"));
+    ui->instagramField->setPlaceholderText(tr("Instagram URL"));
+    ui->tiktokField->setPlaceholderText(tr("TikTok URL"));
+    ui->whatsappField->setPlaceholderText(tr("WhatsApp number"));
+    ui->syncPathPath->setPlaceholderText(tr("Sync folder path"));
+    ui->phoneField->setPlaceholderText(tr("%1 digits").arg(SettingsConstants::PHONE_DIGIT_COUNT));
+
+    // Logo placeholder text
+    if (ui->logoImageLabel->pixmap().isNull()) {
+        ui->logoImageLabel->setText(tr("Click to\nupload logo"));
+    }
+
+    // Permission labels
+    ui->pWithdrawLabel->setText(tr("Withdraw Cash:"));
+    ui->pDeleteTicketLabel->setText(tr("Delete Ticket:"));
+    ui->pDeleteProductLabel->setText(tr("Delete Products:"));
+    ui->pAddCatLabel->setText(tr("Add Categories:"));
+    ui->pDiscountsLabel->setText(tr("Manage Discounts:"));
+    ui->pExpensesLabel->setText(tr("Edit Expenses:"));
+    ui->pRecurringLabel->setText(tr("Pay Recurring:"));
+
+    // Users table headers
+    m_usersModel->setHorizontalHeaderLabels({
+        tr("Username"), tr("Display Name"), tr("Role"), tr("Status"), tr("Last Login")
+    });
 }
 
 void SettingsWindow::setupValidators()
@@ -290,7 +320,6 @@ void SettingsWindow::setupConnections()
     connect(ui->phoneField,  &QLineEdit::textChanged, this, &SettingsWindow::onPhoneChanged);
     connect(ui->postalField, &QLineEdit::textChanged, this, &SettingsWindow::onPostalChanged);
     connect(ui->emailField,  &QLineEdit::textChanged, this, &SettingsWindow::onEmailChanged);
-    connect(ui->taxField, &QLineEdit::textChanged, this, &SettingsWindow::onTaxIdChanged);
 
     connect(ui->userAddBtn,    &QPushButton::clicked, this, &SettingsWindow::onUserAddClicked);
     connect(ui->userEditBtn,   &QPushButton::clicked, this, &SettingsWindow::onUserEditClicked);
@@ -317,6 +346,16 @@ void SettingsWindow::setupConnections()
     connect(ui->bgSelect,    QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { saveAppSettings(); });
 
+    // Regional — country/currency
+    connect(ui->countrySelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsWindow::onCountryChanged);
+    connect(ui->currencySelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsWindow::onCurrencyChanged);
+
+    // Language
+    connect(ui->languageSelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &SettingsWindow::onLanguageChanged);
+
     // Database
     connect(ui->syncPathBtn, &QPushButton::clicked, this, &SettingsWindow::onSyncPathBrowseClicked);
     connect(ui->backupBtn,   &QPushButton::clicked, this, &SettingsWindow::onBackupClicked);
@@ -335,6 +374,10 @@ void SettingsWindow::setupConnections()
     connect(ui->openTicketFrequancy, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { saveNotificationSettings(); });
     connect(ui->outStockCheck, &QCheckBox::toggled, this, [this](bool) { saveNotificationSettings(); });
     connect(ui->nearOutStockCheck, &QCheckBox::toggled, this, [this](bool) { saveNotificationSettings(); });
+
+    // Language change — retranslate all UI text
+    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
+            this, &SettingsWindow::retranslateUi);
 }
 
 void SettingsWindow::updateUserDisplay()
@@ -374,7 +417,6 @@ void SettingsWindow::loadProfile()
     }
 
     ui->shopNameField->setText(query.value("shop_name").toString());
-    ui->taxField->setText(query.value("tax_id").toString());
     ui->adressField->setText(query.value("address").toString());
     ui->cityField->setText(query.value("city").toString());
     ui->postalField->setText(query.value("postal").toString());
@@ -386,7 +428,7 @@ void SettingsWindow::loadProfile()
     ui->whatsappField->setText(query.value("whatsapp").toString());
 
     QString phoneRaw = query.value("phone").toString();
-    QString prefix   = QString(SettingsConstants::PHONE_PREFIX);
+    QString prefix   = m_currentCountry.phoneCode;
     if (phoneRaw.startsWith(prefix)) {
         phoneRaw = phoneRaw.mid(prefix.length());
     }
@@ -402,13 +444,12 @@ void SettingsWindow::loadProfile()
         displayLogo(fullPath);
     } else {
         ui->logoImageLabel->setPixmap(QPixmap());
-        ui->logoImageLabel->setText("Click to\nupload logo");
+        ui->logoImageLabel->setText(tr("Click to\nupload logo"));
     }
 
     onPhoneChanged(ui->phoneField->text());
     onPostalChanged(ui->postalField->text());
     onEmailChanged(ui->emailField->text());
-    onTaxIdChanged(ui->taxField->text());
 }
 
 bool SettingsWindow::saveProfile()
@@ -439,14 +480,12 @@ bool SettingsWindow::saveProfile()
 
     QString fullPhone;
     if (!ui->phoneField->text().trimmed().isEmpty()) {
-        fullPhone = QString(SettingsConstants::PHONE_PREFIX) + ui->phoneField->text().trimmed();
+        fullPhone = m_currentCountry.phoneCode + ui->phoneField->text().trimmed();
     }
 
     QSqlQuery query(m_db->database());
     query.prepare(Queries::PROFILE_UPDATE);
     query.addBindValue(ui->shopNameField->text().trimmed());
-    query.addBindValue(ui->taxField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->taxField->text().trimmed()));
     query.addBindValue(ui->adressField->text().trimmed().isEmpty()
                            ? QVariant() : QVariant(ui->adressField->text().trimmed()));
     query.addBindValue(ui->postalField->text().trimmed().isEmpty()
@@ -475,37 +514,38 @@ bool SettingsWindow::saveProfile()
 
     if (!query.exec()) {
         qWarning() << "Failed to save profile:" << query.lastError().text();
-        QMessageBox::warning(this, "Save Failed", SettingsConstants::MSG_SAVE_FAILED);
+        QMessageBox::warning(this, tr("Save Failed"), tr(SettingsConstants::MSG_SAVE_FAILED));
         return false;
     }
 
-    QMessageBox::information(this, "Saved", SettingsConstants::MSG_SAVE_SUCCESS);
+    QMessageBox::information(this, tr("Saved"), tr(SettingsConstants::MSG_SAVE_SUCCESS));
     return true;
 }
 
 bool SettingsWindow::validateFields()
 {
     if (ui->shopNameField->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, "Validation Error", SettingsConstants::MSG_SHOP_NAME_EMPTY);
+        QMessageBox::warning(this, tr("Validation Error"), tr(SettingsConstants::MSG_SHOP_NAME_EMPTY));
         ui->shopNameField->setFocus();
         return false;
     }
     if (!ui->phoneField->text().trimmed().isEmpty() && !isPhoneValid()) {
-        QMessageBox::warning(this, "Validation Error",
-                             QString(SettingsConstants::MSG_PHONE_INVALID)
-                                 .arg(SettingsConstants::PHONE_DIGIT_COUNT));
+        QMessageBox::warning(this, tr("Validation Error"),
+                             QString(tr(SettingsConstants::MSG_PHONE_INVALID))
+                                 .arg(m_currentCountry.phoneDigits));
         ui->phoneField->setFocus();
         return false;
     }
     if (!ui->postalField->text().trimmed().isEmpty() && !isPostalValid()) {
-        QMessageBox::warning(this, "Validation Error",
-                             QString(SettingsConstants::MSG_POSTAL_INVALID)
-                                 .arg(SettingsConstants::POSTAL_DIGIT_COUNT));
+        QMessageBox::warning(this, tr("Validation Error"),
+                             QString(tr(SettingsConstants::MSG_POSTAL_INVALID))
+                                 .arg(m_currentCountry.postalDigits > 0
+                                          ? m_currentCountry.postalDigits : 10));
         ui->postalField->setFocus();
         return false;
     }
     if (!ui->emailField->text().trimmed().isEmpty() && !isEmailValid()) {
-        QMessageBox::warning(this, "Validation Error", SettingsConstants::MSG_EMAIL_INVALID);
+        QMessageBox::warning(this, tr("Validation Error"), tr(SettingsConstants::MSG_EMAIL_INVALID));
         ui->emailField->setFocus();
         return false;
     }
@@ -514,13 +554,14 @@ bool SettingsWindow::validateFields()
 
 bool SettingsWindow::isPhoneValid() const
 {
-    QRegularExpression rx(QString("^\\d{%1}$").arg(SettingsConstants::PHONE_DIGIT_COUNT));
+    QRegularExpression rx(QString("^\\d{%1}$").arg(m_currentCountry.phoneDigits));
     return rx.match(ui->phoneField->text().trimmed()).hasMatch();
 }
 
 bool SettingsWindow::isPostalValid() const
 {
-    QRegularExpression rx(QString("^\\d{%1}$").arg(SettingsConstants::POSTAL_DIGIT_COUNT));
+    if (m_currentCountry.postalDigits <= 0) return true; // alphanumeric = skip validation
+    QRegularExpression rx(QString("^\\d{%1}$").arg(m_currentCountry.postalDigits));
     return rx.match(ui->postalField->text().trimmed()).hasMatch();
 }
 
@@ -564,27 +605,10 @@ void SettingsWindow::onEmailChanged(const QString& text)
     setFieldState(ui->emailField, isEmailValid());
 }
 
-void SettingsWindow::onTaxIdChanged(const QString& text)
-{
-    if (text.trimmed().isEmpty()) {
-        clearFieldState(ui->taxField);
-        return;
-    }
-
-    int len = text.trimmed().length();
-    if (len < 10) {
-        setFieldState(ui->taxField, false);
-    } else if (len > 10) {
-        ui->taxField->setText(text.trimmed().left(10));
-    } else {
-        setFieldState(ui->taxField, true);
-    }
-}
-
 void SettingsWindow::onLogoClicked()
 {
     QString filePath = QFileDialog::getOpenFileName(
-        this, "Select Logo Image", QString(),
+        this, tr("Select Logo Image"), QString(),
         "Images (*.png *.jpg *.jpeg *.bmp)");
     if (filePath.isEmpty()) return;
     m_newLogoSourcePath = filePath;
@@ -642,8 +666,8 @@ void SettingsWindow::loadUsers()
         row << makeItem(username);
         row << makeItem(displayName);
         row << makeItem(role);
-        row << makeItem(isActive ? "Active" : "Inactive");
-        row << makeItem(lastLogin.isEmpty() ? "Never" : lastLogin);
+        row << makeItem(isActive ? tr("Active") : tr("Inactive"));
+        row << makeItem(lastLogin.isEmpty() ? tr("Never") : lastLogin);
 
         m_usersModel->appendRow(row);
     }
@@ -662,7 +686,7 @@ void SettingsWindow::onUserAddClicked()
 {
     UserDialog dialog(m_db, UserDialog::Mode::Add, QString(), this);
     if (dialog.exec() == QDialog::Accepted) {
-        QMessageBox::information(this, "Success", SettingsConstants::MSG_USER_ADD_SUCCESS);
+        QMessageBox::information(this, tr("Success"), tr(SettingsConstants::MSG_USER_ADD_SUCCESS));
         loadUsers();
     }
 }
@@ -671,13 +695,13 @@ void SettingsWindow::onUserEditClicked()
 {
     QString username = selectedUsername();
     if (username.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", SettingsConstants::MSG_USER_SELECT);
+        QMessageBox::warning(this, tr("No Selection"), tr(SettingsConstants::MSG_USER_SELECT));
         return;
     }
 
     UserDialog dialog(m_db, UserDialog::Mode::Edit, username, this);
     if (dialog.exec() == QDialog::Accepted) {
-        QMessageBox::information(this, "Success", SettingsConstants::MSG_USER_EDIT_SUCCESS);
+        QMessageBox::information(this, tr("Success"), tr(SettingsConstants::MSG_USER_EDIT_SUCCESS));
         loadUsers();
     }
 }
@@ -686,12 +710,12 @@ void SettingsWindow::onUserDeleteClicked()
 {
     QString username = selectedUsername();
     if (username.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", SettingsConstants::MSG_USER_SELECT);
+        QMessageBox::warning(this, tr("No Selection"), tr(SettingsConstants::MSG_USER_SELECT));
         return;
     }
 
     if (username == m_session->username()) {
-        QMessageBox::warning(this, "Not Allowed", SettingsConstants::MSG_USER_CANNOT_DELETE_SELF);
+        QMessageBox::warning(this, tr("Not Allowed"), tr(SettingsConstants::MSG_USER_CANNOT_DELETE_SELF));
         return;
     }
 
@@ -706,15 +730,15 @@ void SettingsWindow::onUserDeleteClicked()
         if (roleQuery.exec() && roleQuery.next()) {
             QString role = roleQuery.value(0).toString();
             if (role == "Admin" && adminCount <= 1) {
-                QMessageBox::warning(this, "Not Allowed",
-                                     SettingsConstants::MSG_USER_CANNOT_DELETE_LAST_ADMIN);
+                QMessageBox::warning(this, tr("Not Allowed"),
+                                     tr(SettingsConstants::MSG_USER_CANNOT_DELETE_LAST_ADMIN));
                 return;
             }
         }
     }
 
-    int confirm = QMessageBox::question(this, "Confirm Delete",
-                                        QString(SettingsConstants::MSG_USER_DELETE_CONFIRM),
+    int confirm = QMessageBox::question(this, tr("Confirm Delete"),
+                                        QString(tr(SettingsConstants::MSG_USER_DELETE_CONFIRM)),
                                         QMessageBox::Yes | QMessageBox::No);
     if (confirm != QMessageBox::Yes) return;
 
@@ -724,11 +748,11 @@ void SettingsWindow::onUserDeleteClicked()
 
     if (!query.exec()) {
         qWarning() << "Failed to delete user:" << query.lastError().text();
-        QMessageBox::warning(this, "Error", "Failed to delete user.");
+        QMessageBox::warning(this, tr("Error"), tr("Failed to delete user."));
         return;
     }
 
-    QMessageBox::information(this, "Deleted", SettingsConstants::MSG_USER_DELETE_SUCCESS);
+    QMessageBox::information(this, tr("Deleted"), tr(SettingsConstants::MSG_USER_DELETE_SUCCESS));
     loadUsers();
 }
 
@@ -769,7 +793,7 @@ void SettingsWindow::updatePermissionsPanel(const QString& username)
 
     if (AccessControl::isAdminRole(role)) {
         ui->userPermissions->setVisible(true);
-        ui->userPermissions->setTitle("Permissions (Admin has all permissions)");
+        ui->userPermissions->setTitle(tr("Permissions (Admin has all permissions)"));
         ui->pWithdrawCheck->setChecked(true);
         ui->pWithdrawCheck->setEnabled(false);
         ui->pDeleteTicketCheck->setChecked(true);
@@ -785,7 +809,7 @@ void SettingsWindow::updatePermissionsPanel(const QString& username)
     }
 
     ui->userPermissions->setVisible(true);
-    ui->userPermissions->setTitle(QString("Permissions for %1 (%2)").arg(username).arg(role));
+    ui->userPermissions->setTitle(tr("Permissions for %1 (%2)").arg(username).arg(role));
     ui->permissionsSaveBtn->setEnabled(true);
 
     bool isManager = (role == "Manager");
@@ -848,7 +872,7 @@ void SettingsWindow::onPermissionsSaveClicked()
     }
 
     saveUserPermissions(username);
-    QMessageBox::information(this, "Success", "Permissions saved successfully.");
+    QMessageBox::information(this, tr("Success"), tr("Permissions saved successfully."));
 }
 
 // ============================================================================
@@ -921,7 +945,7 @@ void SettingsWindow::scanComPorts()
         ui->portSelect->addItem(info.portName());
 
     if (ui->portSelect->count() == 0) {
-        ui->printerStatusLabel->setText(SettingsConstants::MSG_PRINTER_NO_PORTS_FOUND);
+        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_NO_PORTS_FOUND));
     } else {
         const int idx = ui->portSelect->findText(currentPort);
         if (idx >= 0)
@@ -1018,9 +1042,9 @@ void SettingsWindow::savePrinterSettings()
     query.bindValue(":encoding", ui->encodingSelect->currentText());
 
     if (query.exec()) {
-        ui->printerStatusLabel->setText(SettingsConstants::MSG_PRINTER_SAVE_SUCCESS);
+        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_SAVE_SUCCESS));
     } else {
-        ui->printerStatusLabel->setText(SettingsConstants::MSG_PRINTER_SAVE_FAILED);
+        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_SAVE_FAILED));
     }
 }
 
@@ -1046,7 +1070,7 @@ void SettingsWindow::onPrinterEnableToggled(bool enabled)
     savePrinterSettings();
 
     if (!enabled)
-        ui->printerStatusLabel->setText(SettingsConstants::MSG_PRINTER_DISABLED);
+        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_DISABLED));
     else
         ui->printerStatusLabel->clear();
 }
@@ -1078,17 +1102,17 @@ void SettingsWindow::setPrinterControlsEnabled(bool enabled)
 void SettingsWindow::onPrintTestBtn()
 {
     if (!ui->printerEnableBox->isChecked()) {
-        ui->printerStatusLabel->setText(SettingsConstants::MSG_PRINTER_DISABLED);
+        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_DISABLED));
         return;
     }
 
     if (ui->portSelect->currentText().isEmpty()) {
-        ui->printerStatusLabel->setText(SettingsConstants::MSG_PRINTER_NO_PORT);
+        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_NO_PORT));
         return;
     }
 
     if (!m_db || !m_db->isOpen()) {
-        ui->printerStatusLabel->setText(SettingsConstants::MSG_PRINTER_TEST_FAILED);
+        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_TEST_FAILED));
         return;
     }
 
@@ -1123,8 +1147,8 @@ void SettingsWindow::onPrintTestBtn()
     const bool ok = printer.print(data);
 
     ui->printerStatusLabel->setText(
-        ok ? SettingsConstants::MSG_PRINTER_TEST_SENT
-           : SettingsConstants::MSG_PRINTER_TEST_FAILED);
+        ok ? tr(SettingsConstants::MSG_PRINTER_TEST_SENT)
+           : tr(SettingsConstants::MSG_PRINTER_TEST_FAILED));
 }
 // ============================================================================
 // APP SETTINGS — THEME
@@ -1204,6 +1228,163 @@ void SettingsWindow::saveAppSettings()
 }
 
 // ============================================================================
+// APP SETTINGS — REGIONAL (Country / Currency)
+// ============================================================================
+
+void SettingsWindow::populateCountryCurrencyCombos()
+{
+    // Populate country combo
+    ui->countrySelect->clear();
+    const auto& countries = CountryData::countries();
+    for (const auto& c : countries) {
+        ui->countrySelect->addItem(c.name + " (" + c.code + ")", c.code);
+    }
+
+    // Populate currency combo with unique currencies
+    ui->currencySelect->clear();
+    QSet<QString> seen;
+    for (const auto& c : countries) {
+        if (!seen.contains(c.currency)) {
+            seen.insert(c.currency);
+            ui->currencySelect->addItem(c.currency, c.currency);
+        }
+    }
+}
+
+void SettingsWindow::loadCountryCurrency()
+{
+    QSignalBlocker blockCountry(ui->countrySelect);
+    QSignalBlocker blockCurrency(ui->currencySelect);
+
+    QSqlQuery query(m_db->database());
+    query.prepare("SELECT country, currency FROM app_settings WHERE id = 1");
+    if (query.exec() && query.next()) {
+        QString countryCode = query.value("country").toString().trimmed();
+        QString currencyCode = query.value("currency").toString().trimmed();
+
+        if (countryCode.isEmpty()) countryCode = "TN";
+        if (currencyCode.isEmpty()) currencyCode = "TND";
+
+        m_currentCountry = CountryData::findByCode(countryCode);
+
+        // Set country combo
+        int countryIdx = ui->countrySelect->findData(countryCode);
+        if (countryIdx >= 0) ui->countrySelect->setCurrentIndex(countryIdx);
+
+        // Set currency combo
+        int currencyIdx = ui->currencySelect->findData(currencyCode);
+        if (currencyIdx >= 0) ui->currencySelect->setCurrentIndex(currencyIdx);
+    } else {
+        m_currentCountry = CountryData::defaultCountry();
+    }
+
+    updateRegionalFields();
+}
+
+void SettingsWindow::saveCountryCurrency()
+{
+    QString countryCode = ui->countrySelect->currentData().toString();
+    QString currencyCode = ui->currencySelect->currentData().toString();
+
+    QSqlQuery query(m_db->database());
+    query.prepare(Queries::APP_SETTINGS_UPDATE_CURRENCY);
+    query.addBindValue(countryCode.isEmpty() ? QVariant() : QVariant(countryCode));
+    query.addBindValue(currencyCode.isEmpty() ? QVariant() : QVariant(currencyCode));
+    query.exec();
+
+    // Reload currency config globally
+    AppHelpers::loadCurrencyConfig(m_db->database());
+}
+
+void SettingsWindow::onCountryChanged(int index)
+{
+    if (index < 0) return;
+
+    QString countryCode = ui->countrySelect->currentData().toString();
+    m_currentCountry = CountryData::findByCode(countryCode);
+
+    // Auto-select default currency for this country (without triggering onCurrencyChanged save)
+    {
+        QSignalBlocker block(ui->currencySelect);
+        int curIdx = ui->currencySelect->findData(m_currentCountry.currency);
+        if (curIdx >= 0) ui->currencySelect->setCurrentIndex(curIdx);
+    }
+
+    updateRegionalFields();
+
+    // Re-validate phone with new digit count
+    onPhoneChanged(ui->phoneField->text());
+
+    saveCountryCurrency();
+}
+
+void SettingsWindow::onCurrencyChanged(int index)
+{
+    if (index < 0) return;
+    saveCountryCurrency();
+}
+
+void SettingsWindow::updateRegionalFields()
+{
+    // Phone prefix
+    ui->phonePrefixValue->setText(m_currentCountry.phoneCode);
+
+    // Phone validator
+    ui->phoneField->setValidator(new QRegularExpressionValidator(
+        QRegularExpression(QString("^\\d{0,%1}$").arg(m_currentCountry.phoneDigits)), this));
+    ui->phoneField->setMaxLength(m_currentCountry.phoneDigits);
+    ui->phoneField->setPlaceholderText(tr("%1 digits").arg(m_currentCountry.phoneDigits));
+
+    // Postal code validator
+    if (m_currentCountry.postalDigits > 0) {
+        ui->postalField->setValidator(new QRegularExpressionValidator(
+            QRegularExpression(QString("^\\d{0,%1}$").arg(m_currentCountry.postalDigits)), this));
+        ui->postalField->setMaxLength(m_currentCountry.postalDigits);
+        ui->postalField->setPlaceholderText(tr("%1 digits").arg(m_currentCountry.postalDigits));
+    } else {
+        ui->postalField->setValidator(nullptr);
+        ui->postalField->setMaxLength(10);
+        ui->postalField->setPlaceholderText(tr("Postal code"));
+    }
+}
+
+// ============================================================================
+// APP SETTINGS — LANGUAGE
+// ============================================================================
+
+void SettingsWindow::populateLanguageCombo()
+{
+    ui->languageSelect->clear();
+    const auto& languages = TranslationManager::instance().availableLanguages();
+    for (const auto& lang : languages) {
+        ui->languageSelect->addItem(lang.name, lang.code);
+    }
+}
+
+void SettingsWindow::loadLanguage()
+{
+    QSignalBlocker block(ui->languageSelect);
+
+    QString currentLang = TranslationManager::instance().currentLanguage();
+    int idx = ui->languageSelect->findData(currentLang);
+    if (idx >= 0) {
+        ui->languageSelect->setCurrentIndex(idx);
+    }
+}
+
+void SettingsWindow::saveLanguage()
+{
+    QString langCode = ui->languageSelect->currentData().toString();
+    TranslationManager::instance().loadLanguage(langCode);
+}
+
+void SettingsWindow::onLanguageChanged(int index)
+{
+    if (index < 0) return;
+    saveLanguage();
+}
+
+// ============================================================================
 // DATABASE — SYNC PATH
 // ============================================================================
 
@@ -1218,9 +1399,9 @@ void SettingsWindow::loadSyncPath()
 
         QString lastSync = query.value(1).toString();
         if (!lastSync.isEmpty())
-            ui->lastSyncLabel->setText("Last backup: " + lastSync);
+            ui->lastSyncLabel->setText(tr("Last backup: ") + lastSync);
         else
-            ui->lastSyncLabel->setText("Last backup: Never");
+            ui->lastSyncLabel->setText(tr("Last backup: Never"));
     }
 }
 
@@ -1235,7 +1416,7 @@ void SettingsWindow::saveSyncPath(const QString& path)
 void SettingsWindow::onSyncPathBrowseClicked()
 {
     const QString dir = QFileDialog::getExistingDirectory(
-        this, "Select Backup Folder",
+        this, tr("Select Backup Folder"),
         ui->syncPathPath->text().isEmpty()
             ? QDir::homePath()
             : ui->syncPathPath->text());
@@ -1330,14 +1511,14 @@ void SettingsWindow::onBackupClicked()
 {
     const QString syncPath = ui->syncPathPath->text().trimmed();
     if (syncPath.isEmpty()) {
-        QMessageBox::warning(this, "No Backup Folder",
-                             SettingsConstants::MSG_BACKUP_PATH_MISSING);
+        QMessageBox::warning(this, tr("No Backup Folder"),
+                             tr(SettingsConstants::MSG_BACKUP_PATH_MISSING));
         return;
     }
 
     if (!QDir(syncPath).exists()) {
-        QMessageBox::warning(this, "Folder Not Found",
-                             "The backup folder does not exist. Please select a valid folder.");
+        QMessageBox::warning(this, tr("Folder Not Found"),
+                             tr("The backup folder does not exist. Please select a valid folder."));
         return;
     }
 
@@ -1361,7 +1542,7 @@ void SettingsWindow::onBackupClicked()
     QString errMsg;
     ok = runZipProcess(args, tool, &errMsg);
     if (!ok) {
-        QMessageBox::warning(this, "Backup Failed",
+        QMessageBox::warning(this, tr("Backup Failed"),
                              QString("Failed to create backup archive (7-Zip).\n\n%1\n\nMake sure 7-Zip is installed at:\n- C:/Program Files/7-Zip/7z.exe\n- C:/Program Files (x86)/7-Zip/7z.exe")
                              .arg(errMsg));
         return;
@@ -1374,8 +1555,8 @@ void SettingsWindow::onBackupClicked()
     process.start("zip", args);
     if (!process.waitForStarted(5000) || !process.waitForFinished(60000)
         || process.exitCode() != 0) {
-        QMessageBox::warning(this, "Backup Failed",
-                             QString(SettingsConstants::MSG_BACKUP_ZIP_FAILED).arg("zip"));
+        QMessageBox::warning(this, tr("Backup Failed"),
+                             QString(tr(SettingsConstants::MSG_BACKUP_ZIP_FAILED)).arg("zip"));
         return;
     }
     ok = true;
@@ -1391,9 +1572,9 @@ void SettingsWindow::onBackupClicked()
         query.bindValue(":backup", timestamp);
         query.exec();
 
-        ui->lastSyncLabel->setText("Last backup: " + timestamp);
-        QMessageBox::information(this, "Backup Complete",
-                                 SettingsConstants::MSG_BACKUP_SUCCESS);
+        ui->lastSyncLabel->setText(tr("Last backup: ") + timestamp);
+        QMessageBox::information(this, tr("Backup Complete"),
+                                 tr(SettingsConstants::MSG_BACKUP_SUCCESS));
     }
 }
 
@@ -1405,7 +1586,7 @@ void SettingsWindow::onImportClicked()
 {
     // 1 — Pick zip file
     const QString zipPath = QFileDialog::getOpenFileName(
-        this, "Select POSBox Backup",
+        this, tr("Select POSBox Backup"),
         ui->syncPathPath->text().isEmpty()
             ? QDir::homePath()
             : ui->syncPathPath->text(),
@@ -1415,15 +1596,15 @@ void SettingsWindow::onImportClicked()
 
     // 2 — Validate it's a real POSBox backup
     if (!validateBackupZip(zipPath)) {
-        QMessageBox::warning(this, "Invalid Backup",
-                             SettingsConstants::MSG_IMPORT_INVALID_ZIP);
+        QMessageBox::warning(this, tr("Invalid Backup"),
+                             tr(SettingsConstants::MSG_IMPORT_INVALID_ZIP));
         return;
     }
 
     // 3 — Confirm
     const int confirm = QMessageBox::warning(
-        this, "Confirm Import",
-        SettingsConstants::MSG_IMPORT_CONFIRM,
+        this, tr("Confirm Import"),
+        tr(SettingsConstants::MSG_IMPORT_CONFIRM),
         QMessageBox::Yes | QMessageBox::No);
 
     if (confirm != QMessageBox::Yes) return;
@@ -1448,14 +1629,14 @@ void SettingsWindow::onImportClicked()
 #endif
 
     if (!ok) {
-        QMessageBox::warning(this, "Import Failed",
-                             SettingsConstants::MSG_IMPORT_FAILED);
+        QMessageBox::warning(this, tr("Import Failed"),
+                             tr(SettingsConstants::MSG_IMPORT_FAILED));
         return;
     }
 
     // 5 — Success: notify and quit
-    QMessageBox::information(this, "Import Successful",
-                             SettingsConstants::MSG_IMPORT_SUCCESS);
+    QMessageBox::information(this, tr("Import Successful"),
+                             tr(SettingsConstants::MSG_IMPORT_SUCCESS));
     QApplication::quit();
 }
 

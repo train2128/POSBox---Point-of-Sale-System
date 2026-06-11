@@ -31,7 +31,7 @@ OpenTicketsDialog::OpenTicketsDialog(DatabaseManager* db, QWidget* parent)
     , m_action(Action::None)
     , m_selectedTicketId(-1)
 {
-    setWindowTitle("Open Tickets");
+    setWindowTitle(tr("Open Tickets"));
     setModal(true);
     setMinimumSize(700, 400);
     setupUI();
@@ -44,13 +44,13 @@ void OpenTicketsDialog::setupUI()
     main->setContentsMargins(16, 16, 16, 16);
     main->setSpacing(12);
 
-    QLabel* title = new QLabel("Open Tickets", this);
+    QLabel* title = new QLabel(tr("Open Tickets"), this);
     title->setAlignment(Qt::AlignCenter);
     main->addWidget(title);
 
     m_table = new QTableWidget(0, COL_COUNT, this);
     m_table->setHorizontalHeaderLabels({
-        "Date", "Customer", "Total", "Advance", "Description"
+        tr("Date"), tr("Customer"), tr("Total"), tr("Advance"), tr("Description")
     });
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -66,27 +66,27 @@ void OpenTicketsDialog::setupUI()
     QHBoxLayout* btnRow = new QHBoxLayout();
     btnRow->setSpacing(8);
 
-    m_completeBtn = new QPushButton("Complete", this);
+    m_completeBtn = new QPushButton(tr("Complete"), this);
     m_completeBtn->setProperty("btnStyle", "add");
     m_completeBtn->style()->unpolish(m_completeBtn);
     m_completeBtn->style()->polish(m_completeBtn);
 
-    m_editBtn = new QPushButton("Edit", this);
+    m_editBtn = new QPushButton(tr("Edit"), this);
     m_editBtn->setProperty("btnStyle", "edit");
     m_editBtn->style()->unpolish(m_editBtn);
     m_editBtn->style()->polish(m_editBtn);
 
-    m_deleteBtn = new QPushButton("Delete", this);
+    m_deleteBtn = new QPushButton(tr("Delete"), this);
     m_deleteBtn->setProperty("btnStyle", "delete");
     m_deleteBtn->style()->unpolish(m_deleteBtn);
     m_deleteBtn->style()->polish(m_deleteBtn);
 
-    m_printBtn = new QPushButton("Print", this);
+    m_printBtn = new QPushButton(tr("Print"), this);
     m_printBtn->setProperty("btnStyle", "add");
     m_printBtn->style()->unpolish(m_printBtn);
     m_printBtn->style()->polish(m_printBtn);
 
-    QPushButton* closeBtn = new QPushButton("Close", this);
+    QPushButton* closeBtn = new QPushButton(tr("Close"), this);
 
     btnRow->addWidget(m_completeBtn);
     btnRow->addWidget(m_editBtn);
@@ -159,7 +159,7 @@ void OpenTicketsDialog::loadTickets()
 
     if (m_table->rowCount() == 0) {
         m_table->insertRow(0);
-        QTableWidgetItem* placeholder = new QTableWidgetItem("No open tickets");
+        QTableWidgetItem* placeholder = new QTableWidgetItem(tr("No open tickets"));
         placeholder->setTextAlignment(Qt::AlignCenter);
         placeholder->setFlags(Qt::NoItemFlags);
         m_table->setItem(0, 0, placeholder);
@@ -192,7 +192,7 @@ void OpenTicketsDialog::onCompleteClicked()
     if (id <= 0) return;
 
     if (!AppHelpers::confirmAction(this,
-                                   "Mark this ticket as completed and deduct stock?")) return;
+                                   tr("Mark this ticket as completed and deduct stock?"))) return;
 
     m_selectedTicketId = id;
     m_action = Action::Complete;
@@ -215,7 +215,7 @@ void OpenTicketsDialog::onDeleteClicked()
     if (id <= 0) return;
 
     if (!AppHelpers::confirmAction(this,
-                                   "Delete this open ticket? This cannot be undone.")) return;
+                                   tr("Delete this open ticket? This cannot be undone."))) return;
 
     QSqlQuery del(m_db->database());
     del.prepare(Queries::TICKET_ITEM_DELETE_BY_TICKET);
@@ -227,7 +227,7 @@ void OpenTicketsDialog::onDeleteClicked()
     del2.addBindValue(id);
 
     if (!del2.exec()) {
-        AppHelpers::showError(this, "Failed to delete ticket.\n\n" + del2.lastError().text());
+        AppHelpers::showError(this, tr("Failed to delete ticket.\n\n") + del2.lastError().text());
         return;
     }
 

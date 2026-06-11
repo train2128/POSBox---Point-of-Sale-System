@@ -27,6 +27,8 @@ public:
                              ChangeNotifier* notifier, QWidget* parent = nullptr);
     ~InventoryWindow();
 
+    void retranslateUi();
+
 protected:
     void resizeEvent(QResizeEvent* event) override;
 

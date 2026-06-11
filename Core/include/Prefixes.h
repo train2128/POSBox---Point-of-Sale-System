@@ -6,14 +6,15 @@
 #include <QDateTime>
 
 class QWidget;
+class QSqlDatabase;
 
 /**
  * Global application constants used by all apps
  */
 namespace AppConstants {
-// Currency & Formatting
-constexpr const char* CURRENCY = "TND";
-constexpr int PRICE_DECIMALS = 3;
+// Currency & Formatting (runtime-loaded from app_settings via loadCurrencyConfig)
+inline const char* CURRENCY = "TND";
+inline int PRICE_DECIMALS = 3;
 
 // Date/Time Formats
 constexpr const char* DATE_FORMAT = "yyyy-MM-dd";
@@ -47,6 +48,12 @@ constexpr const char* MSG_FEATURE_COMING_SOON = "This feature is coming soon!";
  * Global helper functions
  */
 namespace AppHelpers {
+/**
+     * Load currency code and decimal places from app_settings table.
+     * Call at app startup and after currency settings change.
+     */
+void loadCurrencyConfig(QSqlDatabase db);
+
 /**
      * Format price with currency symbol
      * Example: 12.345 → "12.345 TND"

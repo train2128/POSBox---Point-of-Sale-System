@@ -88,28 +88,18 @@
          </layout>
         </item>
         <item>
-         <layout class="QHBoxLayout" name="horizontalLayout_2">
-          <item>
-           <widget class="QLabel" name="shopNameLabel">
-            <property name="text">
-             <string>TextLabel</string>
-            </property>
-           </widget>
-          </item>
-<item>
-             <widget class="QLineEdit" name="shopNameField"/>
-            </item>
-            <item>
-             <widget class="QLabel" name="taxLabel">
-              <property name="text">
-               <string>TextLabel</string>
-              </property>
-             </widget>
-            </item>
-            <item>
-             <widget class="QLineEdit" name="taxField"/>
-            </item>
-           </layout>
+          <layout class="QHBoxLayout" name="horizontalLayout_2">
+           <item>
+            <widget class="QLabel" name="shopNameLabel">
+             <property name="text">
+              <string>TextLabel</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLineEdit" name="shopNameField"/>
+           </item>
+          </layout>
          </item>
          <item>
           <layout class="QHBoxLayout" name="horizontalLayout_3">
@@ -421,7 +411,7 @@
        <attribute name="title">
         <string>Page</string>
        </attribute>
-       <layout class="QVBoxLayout" name="verticalLayout_4" stretch="1,1,1,2">
+        <layout class="QVBoxLayout" name="verticalLayout_4" stretch="0,0,0,0,1">
         <item>
          <widget class="QGroupBox" name="themeSettings">
           <property name="title">
@@ -552,11 +542,141 @@
             </layout>
            </item>
           </layout>
-         </widget>
-        </item>
-       </layout>
-      </widget>
-      <widget class="QWidget" name="printerSettings">
+          </widget>
+         </item>
+         <item>
+          <widget class="QGroupBox" name="regionalSettings">
+           <property name="title">
+            <string>GroupBox</string>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayoutRegional">
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayoutRegional1">
+              <item>
+               <widget class="QLabel" name="countryLabel">
+                <property name="text">
+                 <string>TextLabel</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="countrySelect"/>
+              </item>
+              <item>
+               <spacer name="horizontalSpacerRegional1">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayoutRegional2">
+              <item>
+               <widget class="QLabel" name="currencyLabel">
+                <property name="text">
+                 <string>TextLabel</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QComboBox" name="currencySelect"/>
+              </item>
+              <item>
+               <spacer name="horizontalSpacerRegional2">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayoutRegional3">
+              <item>
+               <widget class="QLabel" name="phonePrefixLabel">
+                <property name="text">
+                 <string>TextLabel</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLabel" name="phonePrefixValue">
+                <property name="text">
+                 <string></string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="horizontalSpacerRegional3">
+                <property name="orientation">
+                 <enum>Qt::Orientation::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="languageSettings">
+            <property name="title">
+             <string>GroupBox</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayoutLanguage">
+             <item>
+              <layout class="QHBoxLayout" name="horizontalLayoutLanguage1">
+               <item>
+                <widget class="QLabel" name="languageLabel">
+                 <property name="text">
+                  <string>TextLabel</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QComboBox" name="languageSelect"/>
+               </item>
+               <item>
+                <spacer name="horizontalSpacerLanguage1">
+                 <property name="orientation">
+                  <enum>Qt::Orientation::Horizontal</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>40</width>
+                   <height>20</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="printerSettings">
        <attribute name="title">
         <string>Page</string>
        </attribute>

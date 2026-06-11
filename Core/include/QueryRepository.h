@@ -290,20 +290,33 @@ const QString REC_EXPENSE_PAYMENT_SELECT_BY_YEAR =
 // SHOP PROFILE
 // ============================================================================
 const QString PROFILE_INSERT =
-    "INSERT INTO shop_profile (id, shop_name, tax_id, address, postal, city, country, phone, email, website, "
+    "INSERT INTO shop_profile (id, shop_name, address, postal, city, country, phone, email, website, "
     "facebook, instagram, tiktok, whatsapp, business_mode, currency, tax_rate, logo_path) "
-    "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    "VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 const QString PROFILE_UPDATE =
-    "UPDATE shop_profile SET shop_name = ?, tax_id = ?, address = ?, postal = ?, city = ?, country = ?, "
+    "UPDATE shop_profile SET shop_name = ?, address = ?, postal = ?, city = ?, country = ?, "
     "phone = ?, email = ?, website = ?, facebook = ?, instagram = ?, tiktok = ?, whatsapp = ?, "
     "business_mode = ?, currency = ?, tax_rate = ?, logo_path = ?, updated_at = CURRENT_TIMESTAMP "
     "WHERE id = 1";
 
 const QString PROFILE_SELECT =
-    "SELECT shop_name, tax_id, address, postal, city, country, phone, email, website, "
+    "SELECT shop_name, address, postal, city, country, phone, email, website, "
     "facebook, instagram, tiktok, whatsapp, business_mode, currency, tax_rate, logo_path "
     "FROM shop_profile WHERE id = 1";
+
+// ============================================================================
+// APP SETTINGS
+// ============================================================================
+const QString APP_SETTINGS_SELECT =
+    "SELECT color_scheme, font_size, background, show_oos_products, sync_path, last_backup, "
+    "country, currency, language FROM app_settings WHERE id = 1";
+
+const QString APP_SETTINGS_UPDATE_CURRENCY =
+    "UPDATE app_settings SET country = ?, currency = ? WHERE id = 1";
+
+const QString APP_SETTINGS_UPDATE_LANGUAGE =
+    "UPDATE app_settings SET language = ? WHERE id = 1";
 
 // ============================================================================
 // REGISTERS

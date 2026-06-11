@@ -14,33 +14,35 @@
 #include <QPushButton>
 #include <QIcon>
 #include <QIntValidator>
+#include <QRegularExpression>
 #include <QStyle>
 #include <QSizePolicy>
 #include <QDebug>
 
 // ===== HELPERS =====
 
-static QString stripTND(const QString& text)
+static QString stripCurrency(const QString& text)
 {
-    QString result = text;
-    result.remove(" TND", Qt::CaseInsensitive);
-    return result.trimmed();
+    QString result = text.trimmed();
+    // Remove trailing currency code (e.g. " TND", " USD", etc.)
+    static QRegularExpression rx("\\s+\\S+$");
+    result.remove(rx);
+    return result;
 }
 
-static void connectTNDFormat(QLineEdit* edit)
+static void connectCurrencyFormat(QLineEdit* edit, QWidget* parent)
 {
-    QObject::connect(edit, &QLineEdit::editingFinished, edit, [edit]() {
-        QString raw = stripTND(edit->text()).trimmed();
-        if (raw.isEmpty()) return;
-        bool ok = false;
-        double val = raw.toDouble(&ok);
-        if (ok) edit->setText(QString("%1 TND").arg(val, 0, 'f', 3));
+    QObject::connect(edit, &QLineEdit::editingFinished, [edit]() {
+        bool ok;
+        double val = stripCurrency(edit->text()).toDouble(&ok);
+        if (ok && val > 0)
+            edit->setText(AppHelpers::formatPrice(val));
     });
 }
 
-static QString tndText(double val)
+static QString currencyText(double val)
 {
-    return val > 0 ? QString("%1 TND").arg(val, 0, 'f', 3) : QString();
+    return val > 0 ? AppHelpers::formatPrice(val) : QString();
 }
 
 // ===== CONSTRUCTOR =====
@@ -68,7 +70,7 @@ VariantsDialog::VariantsDialog(DatabaseManager* db,
         ui->varStockEdit->setEnabled(false);
         ui->varStockEdit->setText("0");
     } else {
-        ui->varStockLabel->setText("Stock");
+        ui->varStockLabel->setText(tr("Stock"));
     }
 
     if (!pending.isEmpty()) {
@@ -88,16 +90,16 @@ VariantsDialog::~VariantsDialog()
 
 void VariantsDialog::setupUI()
 {
-    setWindowTitle("Manage Variants");
+    setWindowTitle(tr("Manage Variants"));
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
-    ui->varNameLabel->setText("Name");
-    ui->varCostLabel->setText("Cost");
-    ui->varPriceLabel->setText("Price");
-    ui->varAddBtn->setText("+ Add Variant");
+    ui->varNameLabel->setText(tr("Name"));
+    ui->varCostLabel->setText(tr("Cost"));
+    ui->varPriceLabel->setText(tr("Price"));
+    ui->varAddBtn->setText(tr("+ Add Variant"));
 
-    ui->varbuttonBox->button(QDialogButtonBox::Ok)->setText("Save");
-    ui->varbuttonBox->button(QDialogButtonBox::Cancel)->setText("Cancel");
+    ui->varbuttonBox->button(QDialogButtonBox::Ok)->setText(tr("Save"));
+    ui->varbuttonBox->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
 }
 
 void VariantsDialog::setupConnections()
@@ -127,13 +129,13 @@ void VariantsDialog::registerStaticRow()
     row.deleteBtn  = ui->deleteVarBtn;
     row.layout     = nullptr; // owned by the .ui
 
-    ui->varNameEdit->setPlaceholderText("Variant name");
-    ui->varCostEdit->setPlaceholderText("0.000 TND");
-    ui->varPriceEdit->setPlaceholderText("0.000 TND");
+    ui->varNameEdit->setPlaceholderText(tr("Variant name"));
+    ui->varCostEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
+    ui->varPriceEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
     ui->varStockEdit->setPlaceholderText("0");
 
-    connectTNDFormat(ui->varCostEdit);
-    connectTNDFormat(ui->varPriceEdit);
+    connectCurrencyFormat(ui->varCostEdit, this);
+    connectCurrencyFormat(ui->varPriceEdit, this);
 
     styleDeleteButton(ui->deleteVarBtn, false);
 
@@ -189,8 +191,8 @@ void VariantsDialog::loadExistingVariants()
         if (first) {
             m_rows[0].variantId = id;
             ui->varNameEdit->setText(name);
-            ui->varCostEdit->setText(tndText(cost));
-            ui->varPriceEdit->setText(tndText(price));
+            ui->varCostEdit->setText(currencyText(cost));
+            ui->varPriceEdit->setText(currencyText(price));
             ui->varStockEdit->setText(QString::number(stock));
             first = false;
         } else {
@@ -206,8 +208,8 @@ void VariantsDialog::populateFromPending(const QList<PendingVariant>& pending)
     const PendingVariant& first = pending[0];
     m_rows[0].variantId = first.variantId;
     ui->varNameEdit->setText(first.name);
-    ui->varCostEdit->setText(tndText(first.cost));
-    ui->varPriceEdit->setText(tndText(first.price));
+    ui->varCostEdit->setText(currencyText(first.cost));
+    ui->varPriceEdit->setText(currencyText(first.price));
     ui->varStockEdit->setText(QString::number(first.stock));
 
     for (int i = 1; i < pending.size(); ++i) {
@@ -221,21 +223,21 @@ void VariantsDialog::addVariantRow(int variantId, const QString& name, double co
     VariantRow row;
     row.variantId = variantId;
 
-    row.nameLabel  = new QLabel("Name",  this);
-    row.costLabel  = new QLabel("Cost",  this);
-    row.priceLabel = new QLabel("Price", this);
-    row.stockLabel = new QLabel("Stock", this);
+    row.nameLabel  = new QLabel(tr("Name"),  this);
+    row.costLabel  = new QLabel(tr("Cost"),  this);
+    row.priceLabel = new QLabel(tr("Price"), this);
+    row.stockLabel = new QLabel(tr("Stock"), this);
 
     row.nameEdit = new QLineEdit(name, this);
-    row.nameEdit->setPlaceholderText("Variant name");
+    row.nameEdit->setPlaceholderText(tr("Variant name"));
 
-    row.costEdit = new QLineEdit(tndText(cost), this);
-    row.costEdit->setPlaceholderText("0.000 TND");
-    connectTNDFormat(row.costEdit);
+    row.costEdit = new QLineEdit(currencyText(cost), this);
+    row.costEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
+    connectCurrencyFormat(row.costEdit, this);
 
-    row.priceEdit = new QLineEdit(tndText(price), this);
-    row.priceEdit->setPlaceholderText("0.000 TND");
-    connectTNDFormat(row.priceEdit);
+    row.priceEdit = new QLineEdit(currencyText(price), this);
+    row.priceEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
+    connectCurrencyFormat(row.priceEdit, this);
 
     row.stockEdit = new QLineEdit(QString::number(stock), this);
     row.stockEdit->setPlaceholderText("0");
@@ -247,7 +249,7 @@ void VariantsDialog::addVariantRow(int variantId, const QString& name, double co
     }
 
     row.deleteBtn = new QPushButton(this);
-    row.deleteBtn->setToolTip("Remove variant");
+    row.deleteBtn->setToolTip(tr("Remove variant"));
     styleDeleteButton(row.deleteBtn, true);
 
     connect(row.deleteBtn, &QPushButton::clicked, this, &VariantsDialog::onDeleteVariantRow);
@@ -326,7 +328,7 @@ void VariantsDialog::onRejected()
 bool VariantsDialog::validateAndCollect()
 {
     if (m_rows.isEmpty()) {
-        AppHelpers::showWarning(this, InventoryConstants::MSG_VARIANT_NO_VARIANTS);
+        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_VARIANT_NO_VARIANTS));
         return false;
     }
 
@@ -337,26 +339,26 @@ bool VariantsDialog::validateAndCollect()
 
         QString name = row.nameEdit->text().trimmed();
         if (name.isEmpty()) {
-            AppHelpers::showWarning(this, QString("Variant %1: %2")
+            AppHelpers::showWarning(this, QString(tr("Variant %1: %2"))
                                         .arg(i + 1)
-                                        .arg(InventoryConstants::MSG_VARIANT_NAME_EMPTY));
+                                        .arg(tr(InventoryConstants::MSG_VARIANT_NAME_EMPTY)));
             return false;
         }
 
         bool costOk = false, priceOk = false;
-        double cost  = stripTND(row.costEdit->text()).toDouble(&costOk);
-        double price = stripTND(row.priceEdit->text()).toDouble(&priceOk);
+        double cost  = stripCurrency(row.costEdit->text()).toDouble(&costOk);
+        double price = stripCurrency(row.priceEdit->text()).toDouble(&priceOk);
 
         if (!costOk) {
-            AppHelpers::showWarning(this, QString("Variant %1: %2")
+            AppHelpers::showWarning(this, QString(tr("Variant %1: %2"))
                                         .arg(i + 1)
-                                        .arg(InventoryConstants::MSG_VARIANT_COST_INVALID));
+                                        .arg(tr(InventoryConstants::MSG_VARIANT_COST_INVALID)));
             return false;
         }
         if (!priceOk) {
-            AppHelpers::showWarning(this, QString("Variant %1: %2")
+            AppHelpers::showWarning(this, QString(tr("Variant %1: %2"))
                                         .arg(i + 1)
-                                        .arg(InventoryConstants::MSG_VARIANT_PRICE_INVALID));
+                                        .arg(tr(InventoryConstants::MSG_VARIANT_PRICE_INVALID)));
             return false;
         }
 

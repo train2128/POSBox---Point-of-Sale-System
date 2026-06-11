@@ -23,7 +23,7 @@ DiscountDialog::DiscountDialog(DatabaseManager* db, double subtotal, QWidget* pa
     , m_previewLabel(nullptr)
 {
     setObjectName("discount-dialog");
-    setWindowTitle("Apply Discount");
+    setWindowTitle(tr("Apply Discount"));
     setModal(true);
     setFixedWidth(340);
 
@@ -41,13 +41,13 @@ void DiscountDialog::setupUI()
     mainLayout->setSpacing(14);
 
     // Title
-    QLabel* titleLabel = new QLabel("Apply Discount", this);
+    QLabel* titleLabel = new QLabel(tr("Apply Discount"), this);
     titleLabel->setObjectName("discount-dialog-title");
     titleLabel->setAlignment(Qt::AlignCenter);
     mainLayout->addWidget(titleLabel);
 
     // ── Preset section ────────────────────────────────────────────
-    QLabel* presetLabel = new QLabel("Preset Discount", this);
+    QLabel* presetLabel = new QLabel(tr("Preset Discount"), this);
     presetLabel->setObjectName("discount-dialog-section-label");
     mainLayout->addWidget(presetLabel);
 
@@ -62,18 +62,18 @@ void DiscountDialog::setupUI()
     mainLayout->addWidget(divider);
 
     // ── Custom section ────────────────────────────────────────────
-    QLabel* customLabel = new QLabel("Custom Discount", this);
+    QLabel* customLabel = new QLabel(tr("Custom Discount"), this);
     customLabel->setObjectName("discount-dialog-section-label");
     mainLayout->addWidget(customLabel);
 
-    QLabel* hintLabel = new QLabel("Enter amount (e.g. 5 or 0.5) or percentage (e.g. 5%)", this);
+    QLabel* hintLabel = new QLabel(tr("Enter amount (e.g. 5 or 0.5) or percentage (e.g. 5%)"), this);
     hintLabel->setObjectName("discount-dialog-hint");
     hintLabel->setWordWrap(true);
     mainLayout->addWidget(hintLabel);
 
     m_customEdit = new QLineEdit(this);
     m_customEdit->setObjectName("discount-dialog-input");
-    m_customEdit->setPlaceholderText("e.g. 5   or   10%");
+    m_customEdit->setPlaceholderText(tr("e.g. 5   or   10%"));
     mainLayout->addWidget(m_customEdit);
 
     // ── Preview ───────────────────────────────────────────────────
@@ -86,13 +86,13 @@ void DiscountDialog::setupUI()
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(8);
 
-    QPushButton* okBtn = new QPushButton("Apply", this);
+    QPushButton* okBtn = new QPushButton(tr("Apply"), this);
     okBtn->setObjectName("discount-dialog-ok");
     okBtn->setProperty("btnStyle", "add");
     okBtn->style()->unpolish(okBtn);
     okBtn->style()->polish(okBtn);
 
-    QPushButton* cancelBtn = new QPushButton("Cancel", this);
+    QPushButton* cancelBtn = new QPushButton(tr("Cancel"), this);
     cancelBtn->setObjectName("discount-dialog-cancel");
     cancelBtn->setProperty("btnStyle", "delete");
     cancelBtn->style()->unpolish(cancelBtn);
@@ -111,7 +111,7 @@ void DiscountDialog::setupUI()
 
 void DiscountDialog::loadPresets()
 {
-    m_presetCombo->addItem("— None —", -1);
+    m_presetCombo->addItem(tr("--- None ---"), -1);
 
     if (!m_db) return;
 
@@ -200,9 +200,9 @@ void DiscountDialog::updatePreview()
     if (valid) {
         double amount = DiscountHandler::calculateAmount(preview, m_subtotal);
         m_previewLabel->setText(
-            QString("Discount: -%1").arg(AppHelpers::formatPrice(amount)));
+            QString(tr("Discount: -%1")).arg(AppHelpers::formatPrice(amount)));
     } else {
-        m_previewLabel->setText("No discount selected");
+        m_previewLabel->setText(tr("No discount selected"));
     }
 }
 
@@ -218,7 +218,7 @@ void DiscountDialog::onOkClicked()
         double val = numStr.toDouble(&ok);
 
         if (!ok || val <= 0) {
-            AppHelpers::showWarning(this, "Please enter a valid discount value.");
+            AppHelpers::showWarning(this, tr("Please enter a valid discount value."));
             m_customEdit->setFocus();
             return;
         }
@@ -226,8 +226,8 @@ void DiscountDialog::onOkClicked()
         m_result.type     = isPercent ? "percentage" : "amount";
         m_result.value    = val;
         m_result.name     = isPercent
-                            ? QString("Custom (%1%)").arg(val)
-                            : QString("Custom (%1)").arg(AppHelpers::formatPrice(val));
+                            ? QString(tr("Custom (%1%)")).arg(val)
+                            : QString(tr("Custom (%1)")).arg(AppHelpers::formatPrice(val));
         m_result.presetId = -1;
         accept();
         return;
@@ -240,7 +240,7 @@ void DiscountDialog::onOkClicked()
         int id = list.value(0).toInt();
 
         if (id == -1) {
-            AppHelpers::showWarning(this, "Please select a preset or enter a custom discount.");
+            AppHelpers::showWarning(this, tr("Please select a preset or enter a custom discount."));
             return;
         }
 
@@ -252,7 +252,7 @@ void DiscountDialog::onOkClicked()
         return;
     }
 
-    AppHelpers::showWarning(this, "Please select a preset or enter a custom discount.");
+    AppHelpers::showWarning(this, tr("Please select a preset or enter a custom discount."));
 }
 
 DiscountItem DiscountDialog::result() const

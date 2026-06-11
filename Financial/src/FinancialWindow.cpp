@@ -13,6 +13,8 @@
 #include "NotificationPanel.h"
 #include "AccessControl.h"
 #include "LogoutManager.h"
+#include <QLocale>
+#include "TranslationManager.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QTableWidgetItem>
@@ -57,6 +59,8 @@ FinancialWindow::FinancialWindow(UserSession* session,
     loadTopSalesTable();
     loadOneTimeExpenses();
     loadYearlyTable();
+
+    retranslateUi();
 
     showMaximized();
 }
@@ -124,6 +128,10 @@ void FinancialWindow::setupConnections()
     // Tab 2
     connect(FinancialUIMap::yearlyTable, &QTableWidget::cellDoubleClicked,
             this, &FinancialWindow::onYearlyTableDoubleClicked);
+
+    // Language change — retranslate all UI text
+    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
+            this, &FinancialWindow::retranslateUi);
 }
 
 void FinancialWindow::updateUserDisplay()
@@ -133,6 +141,77 @@ void FinancialWindow::updateUserDisplay()
             QString("%1  |  %2")
                 .arg(m_session->displayName())
                 .arg(m_session->role()));
+}
+
+void FinancialWindow::retranslateUi()
+{
+    // Window title
+    setWindowTitle(tr("POSBox - Financial"));
+
+    // Top bar
+    if (FinancialUIMap::notificationBtn)
+        FinancialUIMap::notificationBtn->setToolTip(tr("Notifications"));
+    if (FinancialUIMap::logoutBtn)
+        FinancialUIMap::logoutBtn->setToolTip(tr("Logout"));
+
+    // Tab titles
+    ui->tabwidget->setTabText(0, tr("Overview"));
+    ui->tabwidget->setTabText(1, tr("Tax & Yearly"));
+    ui->tabwidget->setTabText(2, tr("Documents"));
+    ui->tabwidget->setTabText(3, tr("Settings"));
+
+    // Group box titles
+    FinancialUIMap::expensesBox->setTitle(tr("One-Time Expenses"));
+
+    // Button labels
+    FinancialUIMap::addExpenseBtn->setText(tr("Add Expense"));
+    FinancialUIMap::deleteExpenseBtn->setText(tr("Delete"));
+
+    // Month names in monthSelect (locale-aware)
+    for (int i = 0; i < 12; ++i)
+        FinancialUIMap::monthSelect->setItemText(i, QLocale::system().monthName(i + 1, QLocale::LongFormat));
+
+    // Monthly table horizontal header labels
+    FinancialUIMap::monthlyTable->setHorizontalHeaderLabels({
+        tr("Income"), tr("Cost"), tr("Benefit"), tr("Expenses"), tr("Rest")
+    });
+
+    // Weekly table horizontal header labels
+    FinancialUIMap::weeklyTable->setHorizontalHeaderLabels({
+        tr("Day"), tr("Income"), tr("Expenses")
+    });
+
+    // Weekly table day names (locale-aware via QDate)
+    const int dayMapping[] = {7, 1, 2, 3, 4, 5, 6};
+    for (int row = 0; row < 7; ++row) {
+        QTableWidgetItem* dayItem = FinancialUIMap::weeklyTable->item(row, FinancialConstants::COL_WEEKLY_DAY);
+        if (dayItem) dayItem->setText(QLocale::system().dayName(dayMapping[row], QLocale::LongFormat));
+    }
+
+    // Top sales table horizontal header labels
+    FinancialUIMap::topSalesTable->setHorizontalHeaderLabels({
+        tr("Rank"), tr("Product"), tr("Quantity")
+    });
+
+    // Expenses table horizontal header labels
+    FinancialUIMap::expensesTable->setHorizontalHeaderLabels({
+        tr("Name"), tr("Amount"), tr("Date")
+    });
+
+    // Yearly table horizontal header labels
+    FinancialUIMap::yearlyTable->setHorizontalHeaderLabels({
+        tr("Month"), tr("Income"), tr("Cost"), tr("Expenses"), tr("Benefit")
+    });
+
+    // Yearly table month names (locale-aware via QDate)
+    for (int row = 0; row < 12; ++row) {
+        QTableWidgetItem* monthItem = FinancialUIMap::yearlyTable->item(row, FinancialConstants::COL_YEAR_MONTH);
+        if (monthItem) monthItem->setText(QLocale::system().monthName(row + 1, QLocale::LongFormat));
+    }
+
+    // Yearly table total row label
+    QTableWidgetItem* totalItem = FinancialUIMap::yearlyTable->item(12, 0);
+    if (totalItem) totalItem->setText(tr("Total"));
 }
 
 // ============================================================================
@@ -396,7 +475,7 @@ void FinancialWindow::onAddExpenseClicked()
 {
     // Single dialog for name + amount
     QDialog dlg(this);
-    dlg.setWindowTitle("Add Expense");
+    dlg.setWindowTitle(tr("Add Expense"));
     dlg.setFixedWidth(320);
 
     QVBoxLayout* layout = new QVBoxLayout(&dlg);
@@ -404,12 +483,12 @@ void FinancialWindow::onAddExpenseClicked()
     layout->setContentsMargins(16, 16, 16, 16);
 
     QLineEdit* nameEdit = new QLineEdit(&dlg);
-    nameEdit->setPlaceholderText("Expense name");
+    nameEdit->setPlaceholderText(tr("Expense name"));
 
     QDoubleSpinBox* amountSpin = new QDoubleSpinBox(&dlg);
     amountSpin->setMinimum(0.001);
     amountSpin->setMaximum(999999.0);
-    amountSpin->setDecimals(3);
+    amountSpin->setDecimals(AppConstants::PRICE_DECIMALS);
     amountSpin->setSuffix(QString(" %1").arg(AppConstants::CURRENCY));
 
     QDialogButtonBox* btns = new QDialogButtonBox(
@@ -417,9 +496,9 @@ void FinancialWindow::onAddExpenseClicked()
     connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
-    layout->addWidget(new QLabel("Name:", &dlg));
+    layout->addWidget(new QLabel(tr("Name:"), &dlg));
     layout->addWidget(nameEdit);
-    layout->addWidget(new QLabel("Amount:", &dlg));
+    layout->addWidget(new QLabel(tr("Amount:"), &dlg));
     layout->addWidget(amountSpin);
     layout->addWidget(btns);
 
@@ -427,7 +506,7 @@ void FinancialWindow::onAddExpenseClicked()
     const QString name   = nameEdit->text().trimmed();
     const double  amount = amountSpin->value();
     if (name.isEmpty()) {
-        AppHelpers::showWarning(this, "Please enter an expense name.");
+        AppHelpers::showWarning(this, tr("Please enter an expense name."));
         return;
     }
 
@@ -439,7 +518,7 @@ void FinancialWindow::onAddExpenseClicked()
     ins.addBindValue(QVariant()); // notes
 
     if (!ins.exec()) {
-        AppHelpers::showError(this, "Failed to add expense.\n\n" + ins.lastError().text());
+        AppHelpers::showError(this, tr("Failed to add expense.\n\n") + ins.lastError().text());
         return;
     }
 
@@ -451,18 +530,18 @@ void FinancialWindow::onDeleteExpenseClicked()
 {
     const int id = selectedOneTimeExpenseId();
     if (id <= 0) {
-        AppHelpers::showWarning(this, FinancialConstants::MSG_NO_SELECTION);
+        AppHelpers::showWarning(this, tr(FinancialConstants::MSG_NO_SELECTION));
         return;
     }
 
-    if (!AppHelpers::confirmAction(this, FinancialConstants::MSG_DELETE_CONFIRM)) return;
+    if (!AppHelpers::confirmAction(this, tr(FinancialConstants::MSG_DELETE_CONFIRM))) return;
 
     QSqlQuery del(m_db->database());
     del.prepare(Queries::ONE_TIME_EXPENSE_DELETE);
     del.addBindValue(id);
 
     if (!del.exec()) {
-        AppHelpers::showError(this, "Failed to delete expense.\n\n" + del.lastError().text());
+        AppHelpers::showError(this, tr("Failed to delete expense.\n\n") + del.lastError().text());
         return;
     }
 
@@ -509,15 +588,17 @@ void FinancialWindow::onYearlyTableDoubleClicked(int row, int column)
     }
 
     const QStringList monthNames = {
-        "January","February","March","April","May","June",
-        "July","August","September","October","November","December"
+        tr("January"), tr("February"), tr("March"), tr("April"), tr("May"), tr("June"),
+        tr("July"), tr("August"), tr("September"), tr("October"), tr("November"), tr("December")
     };
 
     AppHelpers::showInfo(this,
-                         QString("%1 %2\n\nTransactions: %3\nTotal Income: %4")
+                         QString("%1 %2\n\n%3: %4\n%5: %6")
                              .arg(monthNames[month - 1])
                              .arg(year)
+                             .arg(tr("Transactions"))
                              .arg(count)
+                             .arg(tr("Total Income"))
                              .arg(AppHelpers::formatPrice(income)));
 }
 

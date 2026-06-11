@@ -24,6 +24,7 @@
 #include "AccessControl.h"
 #include "LogoutManager.h"
 #include "ThermalPrinter.h"
+#include "TranslationManager.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QVBoxLayout>
@@ -95,14 +96,52 @@ RegisterWindow::~RegisterWindow()
 
 void RegisterWindow::setupUI()
 {
-    setWindowTitle("POSBox - Register");
-
     // Configure search timer
     m_searchTimer->setSingleShot(true);
     m_searchTimer->setInterval(AppConstants::SEARCH_DELAY_MS);
 
     // Update user display
     updateUserDisplay();
+
+    // Apply translatable strings
+    retranslateUi();
+}
+
+void RegisterWindow::retranslateUi()
+{
+    setWindowTitle(tr("POSBox - Register"));
+
+    // Top bar
+    if (UIMap::ticketsBtn)
+        UIMap::ticketsBtn->setText(tr("Tickets"));
+    if (UIMap::notificationBtn)
+        UIMap::notificationBtn->setToolTip(tr("Notifications"));
+    if (UIMap::logoutBtn)
+        UIMap::logoutBtn->setToolTip(tr("Logout"));
+
+    // Products section
+    if (UIMap::searchBar)
+        UIMap::searchBar->setPlaceholderText(tr("Search products or scan barcode..."));
+    if (UIMap::customItemBtn)
+        UIMap::customItemBtn->setText(tr("Custom Item"));
+
+    // Cart section
+    if (UIMap::withdrawBtn)
+        UIMap::withdrawBtn->setText(tr("Withdraw"));
+    if (UIMap::discountBtn)
+        UIMap::discountBtn->setToolTip(tr("Apply Discount"));
+    if (UIMap::confirmBtn)
+        UIMap::confirmBtn->setText(tr("Confirm Sale"));
+    if (UIMap::cancelBtn)
+        UIMap::cancelBtn->setText(tr("Cancel"));
+
+    // Update "All Categories" item in filterBox
+    if (UIMap::filterBox && UIMap::filterBox->count() > 0) {
+        UIMap::filterBox->setItemText(0, tr("All Categories"));
+    }
+
+    updateCartTotal();
+    updateOpenTicketButton();
 }
 
 void RegisterWindow::setupConnections()
@@ -126,6 +165,10 @@ void RegisterWindow::setupConnections()
     connect(UIMap::confirmBtn, &QPushButton::clicked, this, &RegisterWindow::onConfirmClicked);
     connect(UIMap::cancelBtn, &QPushButton::clicked, this, &RegisterWindow::onCancelClicked);
 
+    // Language change notifications
+    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
+            this, &RegisterWindow::retranslateUi);
+
     // Change notifications
     if (m_notifier) {
         connect(m_notifier, &ChangeNotifier::productChanged,
@@ -140,7 +183,7 @@ void RegisterWindow::setupConnections()
 void RegisterWindow::updateUserDisplay()
 {
     if (m_session && UIMap::userLabel) {
-        QString displayText = QString("%1 (%2)")
+        QString displayText = QString(tr("%1 (%2)"))
         .arg(m_session->displayName())
             .arg(m_session->role());
         UIMap::userLabel->setText(displayText);
@@ -162,7 +205,7 @@ void RegisterWindow::loadCategories()
         return;
     }
 
-    UIMap::filterBox->addItem("All Categories", -1);
+    UIMap::filterBox->addItem(tr("All Categories"), -1);
 
     while (query.next()) {
         QHash<QString, QVariant> category;
@@ -423,7 +466,7 @@ void RegisterWindow::addToCart(int productId)
     // Check stock
     if (!isService && stock <= 0) {
         AppHelpers::showWarning(this,
-                                QString("Product '%1' is out of stock.").arg(name));
+                                QString(tr("Product '%1' is out of stock.")).arg(name));
         return;
     }
 
@@ -431,7 +474,7 @@ void RegisterWindow::addToCart(int productId)
     if (m_cart.contains(productId)) {
         if (!isService && m_cart[productId].quantity >= stock) {
             AppHelpers::showWarning(this,
-                                    QString(RegisterConstants::MSG_STOCK_EXCEEDED)
+                                    QString(tr(RegisterConstants::MSG_STOCK_EXCEEDED))
                                         .arg(name).arg(stock));
             return;
         }
@@ -471,13 +514,13 @@ void RegisterWindow::addVariantToCart(int productId, const VariantOption& varian
 
     // Check stock for non-service variants
     if (!parentIsService && variant.stock <= 0) {
-        AppHelpers::showWarning(this, QString("Variant '%1' is out of stock.").arg(variant.name));
+        AppHelpers::showWarning(this, QString(tr("Variant '%1' is out of stock.")).arg(variant.name));
         return;
     }
 
     if (m_cart.contains(cartKey)) {
         if (!parentIsService && m_cart[cartKey].quantity >= variant.stock) {
-            AppHelpers::showWarning(this, QString(RegisterConstants::MSG_STOCK_EXCEEDED)
+            AppHelpers::showWarning(this, QString(tr(RegisterConstants::MSG_STOCK_EXCEEDED))
                                         .arg(variant.name).arg(variant.stock));
             return;
         }
@@ -546,7 +589,7 @@ void RegisterWindow::updateCartDisplay()
         QHBoxLayout* layout = new QHBoxLayout(separatorWidget);
         layout->setContentsMargins(10, 5, 10, 5);
 
-        QLabel* label = new QLabel("DISCOUNTS");
+        QLabel* label = new QLabel(tr("DISCOUNTS"));
         label->setProperty("class", "discount-separator-label");
         label->setAlignment(Qt::AlignCenter);
         layout->addWidget(label);
@@ -594,13 +637,13 @@ void RegisterWindow::updateCartTotal()
     if (UIMap::totalLabel) {
         if (totalDiscount > 0) {
             UIMap::totalLabel->setText(
-                QString("Subtotal: %1\nDiscount: -%2\nTotal: %3")
+                QString(tr("Subtotal: %1\nDiscount: -%2\nTotal: %3"))
                     .arg(AppHelpers::formatPrice(subtotal))
                     .arg(AppHelpers::formatPrice(totalDiscount))
                     .arg(AppHelpers::formatPrice(m_cartTotal)));
         } else {
             UIMap::totalLabel->setText(
-                QString("Total: %1").arg(AppHelpers::formatPrice(m_cartTotal)));
+                QString(tr("Total: %1")).arg(AppHelpers::formatPrice(m_cartTotal)));
         }
     }
 }
@@ -636,7 +679,7 @@ void RegisterWindow::clearCart()
 bool RegisterWindow::validateTransaction()
 {
     if (m_cart.isEmpty()) {
-        AppHelpers::showWarning(this, RegisterConstants::MSG_CART_EMPTY);
+        AppHelpers::showWarning(this, tr(RegisterConstants::MSG_CART_EMPTY));
         return false;
     }
 
@@ -656,7 +699,7 @@ void RegisterWindow::processTransaction()
     if (!validateTransaction()) return;
 
     if (!m_session) {
-        AppHelpers::showError(this, RegisterConstants::MSG_NO_USER_LOGGED_IN);
+        AppHelpers::showError(this, tr(RegisterConstants::MSG_NO_USER_LOGGED_IN));
         return;
     }
 
@@ -698,8 +741,8 @@ void RegisterWindow::processTransaction()
 
     if (!query.exec()) {
         AppHelpers::showError(this,
-                              QString("%1\n\n%2")
-                                  .arg(RegisterConstants::MSG_TRANSACTION_FAILED)
+                              QString(tr("%1\n\n%2"))
+                                  .arg(tr(RegisterConstants::MSG_TRANSACTION_FAILED))
                                   .arg(query.lastError().text()));
         return;
     }
@@ -785,14 +828,14 @@ void RegisterWindow::onConfirmClicked()
 void RegisterWindow::onCancelClicked()
 {
     if (m_editMode) {
-        if (AppHelpers::confirmAction(this, "Cancel editing this ticket? All changes will be lost."))
+        if (AppHelpers::confirmAction(this, tr("Cancel editing this ticket? All changes will be lost.")))
             exitEditMode();
         return;
     }
 
     if (m_cart.isEmpty() && m_discounts.isEmpty()) return;
 
-    if (AppHelpers::confirmAction(this, RegisterConstants::MSG_CANCEL_CONFIRM)) {
+    if (AppHelpers::confirmAction(this, tr(RegisterConstants::MSG_CANCEL_CONFIRM))) {
         clearCart();
     }
 }
@@ -826,7 +869,7 @@ void RegisterWindow::onTicketsClicked()
     args << "--user" << m_session->username();
 
     if (!QProcess::startDetached(executable, args))
-        AppHelpers::showError(this, "Failed to launch Tickets application.");
+        AppHelpers::showError(this, tr("Failed to launch Tickets application."));
 }
 
 void RegisterWindow::onNotificationClicked()
@@ -849,7 +892,7 @@ void RegisterWindow::onNotificationClicked()
 void RegisterWindow::onDiscountClicked()
 {
     if (m_cart.isEmpty()) {
-        AppHelpers::showWarning(this, RegisterConstants::MSG_CART_EMPTY);
+        AppHelpers::showWarning(this, tr(RegisterConstants::MSG_CART_EMPTY));
         return;
     }
 
@@ -896,40 +939,40 @@ void RegisterWindow::onWithdrawClicked()
 {
     if (m_session && !AccessControl::canPerformAction(
             m_session->username(), AccessControl::WithdrawCash, m_db->database())) {
-        AppHelpers::showWarning(this, "You do not have permission to withdraw cash.");
+        AppHelpers::showWarning(this, tr("You do not have permission to withdraw cash."));
         return;
     }
 
     QInputDialog dlg(this);
-    dlg.setWindowTitle("Withdraw");
-    dlg.setLabelText("Enter withdrawal amount:");
+    dlg.setWindowTitle(tr("Withdraw"));
+    dlg.setLabelText(tr("Enter withdrawal amount:"));
     dlg.setInputMode(QInputDialog::DoubleInput);
     dlg.setDoubleMinimum(0.01);
     dlg.setDoubleMaximum(999999.0);
     dlg.setDoubleDecimals(2);
-    dlg.setOkButtonText("Withdraw");
-    dlg.setCancelButtonText("Cancel");
+    dlg.setOkButtonText(tr("Withdraw"));
+    dlg.setCancelButtonText(tr("Cancel"));
 
     if (dlg.exec() != QDialog::Accepted) return;
 
     const double amount = dlg.doubleValue();
     if (amount <= 0) return;
 
-    const QString userName = m_session ? m_session->displayName() : "Unknown";
+    const QString userName = m_session ? m_session->displayName() : tr("Unknown");
 
     QSqlQuery ins(m_db->database());
     ins.prepare(Queries::ONE_TIME_EXPENSE_INSERT);
     ins.addBindValue(userName);
     ins.addBindValue(amount);
     ins.addBindValue(QDate::currentDate().toString("yyyy-MM-dd"));
-    ins.addBindValue("Withdrawal from Register");
+    ins.addBindValue(tr("Withdrawal from Register"));
 
     if (!ins.exec()) {
-        AppHelpers::showError(this, "Failed to record withdrawal.\n\n" + ins.lastError().text());
+        AppHelpers::showError(this, tr("Failed to record withdrawal.\n\n") + ins.lastError().text());
         return;
     }
 
-    AppHelpers::showInfo(this, QString("Withdrawal of %1 recorded successfully.").arg(AppHelpers::formatPrice(amount)));
+    AppHelpers::showInfo(this, QString(tr("Withdrawal of %1 recorded successfully.")).arg(AppHelpers::formatPrice(amount)));
 }
 
 void RegisterWindow::onCustomItemClicked()
@@ -993,8 +1036,8 @@ void RegisterWindow::checkPendingEditRequest()
     // Warn if cart is not empty
     if (!m_cart.isEmpty()) {
         if (!AppHelpers::confirmAction(this,
-                                       "There are items in the current cart.\n"
-                                       "Loading the ticket to edit will clear the cart. Continue?"))
+                                       tr("There are items in the current cart.\n"
+                                       "Loading the ticket to edit will clear the cart. Continue?")))
             return;
     }
 
@@ -1015,7 +1058,7 @@ void RegisterWindow::enterEditMode(int ticketId)
 
     if (!query.exec()) {
         qWarning() << "enterEditMode: failed to load ticket items:" << query.lastError().text();
-        AppHelpers::showError(this, "Failed to load ticket items for editing.");
+        AppHelpers::showError(this, tr("Failed to load ticket items for editing."));
         return;
     }
 
@@ -1029,7 +1072,7 @@ void RegisterWindow::enterEditMode(int ticketId)
         double  unitCost   = query.value("unit_cost").toDouble();
 
         CartItem item;
-        item.name              = varName.isEmpty() ? name : QString("%1 — %2").arg(name, varName);
+        item.name              = varName.isEmpty() ? name : QString(tr("%1 — %2")).arg(name, varName);
         item.price             = unitPrice;
         item.cost              = unitCost;
         item.quantity          = qty;
@@ -1057,9 +1100,9 @@ void RegisterWindow::enterEditMode(int ticketId)
     updateCartTotal();
 
     // Update UI to reflect edit mode
-    UIMap::confirmBtn->setText("Save Changes");
-    UIMap::cancelBtn->setText("Cancel Edit");
-    setWindowTitle("POSBox - Register  [EDITING TICKET]");
+    UIMap::confirmBtn->setText(tr("Save Changes"));
+    UIMap::cancelBtn->setText(tr("Cancel Edit"));
+    setWindowTitle(tr("POSBox - Register  [EDITING TICKET]"));
 
     qDebug() << "Entered edit mode for ticket" << ticketId;
 }
@@ -1078,9 +1121,9 @@ void RegisterWindow::exitEditMode()
 
     clearCart();
 
-    UIMap::confirmBtn->setText("Confirm Sale");
-    UIMap::cancelBtn->setText("Cancel");
-    setWindowTitle("POSBox - Register");
+    UIMap::confirmBtn->setText(tr("Confirm Sale"));
+    UIMap::cancelBtn->setText(tr("Cancel"));
+    setWindowTitle(tr("POSBox - Register"));
 
     qDebug() << "Exited edit mode";
 }
@@ -1133,7 +1176,7 @@ void RegisterWindow::saveEditedTransaction()
     upd.addBindValue(m_editTicketId);
 
     if (!upd.exec()) {
-        AppHelpers::showError(this, "Failed to update ticket totals.\n\n" + upd.lastError().text());
+        AppHelpers::showError(this, tr("Failed to update ticket totals.\n\n") + upd.lastError().text());
         return;
     }
 
@@ -1142,7 +1185,7 @@ void RegisterWindow::saveEditedTransaction()
     del.prepare(Queries::TICKET_ITEM_DELETE_BY_TICKET);
     del.addBindValue(m_editTicketId);
     if (!del.exec()) {
-        AppHelpers::showError(this, "Failed to clear old ticket items.\n\n" + del.lastError().text());
+        AppHelpers::showError(this, tr("Failed to clear old ticket items.\n\n") + del.lastError().text());
         return;
     }
 
@@ -1186,7 +1229,7 @@ void RegisterWindow::saveEditedTransaction()
         m_notifier->notifyChange(ChangeType::TICKET_UPDATED, m_editTicketId);
     }
 
-    AppHelpers::showInfo(this, "Ticket updated successfully.");
+    AppHelpers::showInfo(this, tr("Ticket updated successfully."));
 
     exitEditMode();
     loadProducts();
@@ -1258,9 +1301,9 @@ void RegisterWindow::updateOpenTicketButton()
     // If cart has items (in any mode) → "Save Ticket"
     // Otherwise → "Open Tickets"
     if (!m_cart.isEmpty()) {
-        UIMap::openTicketsBtn->setText("Save Ticket");
+        UIMap::openTicketsBtn->setText(tr("Save Ticket"));
     } else {
-        UIMap::openTicketsBtn->setText("Open Tickets");
+        UIMap::openTicketsBtn->setText(tr("Open Tickets"));
     }
 }
 
@@ -1313,7 +1356,7 @@ void RegisterWindow::saveAsOpenTicket()
         upd.addBindValue(m_openTicketEditId);
 
         if (!upd.exec()) {
-            AppHelpers::showError(this, "Failed to update ticket.\n\n" + upd.lastError().text());
+            AppHelpers::showError(this, tr("Failed to update ticket.\n\n") + upd.lastError().text());
             return;
         }
 
@@ -1344,7 +1387,7 @@ void RegisterWindow::saveAsOpenTicket()
         if (m_notifier)
             m_notifier->notifyChange(ChangeType::TICKET_UPDATED, m_openTicketEditId);
 
-        AppHelpers::showInfo(this, "Open ticket updated successfully.");
+        AppHelpers::showInfo(this, tr("Open ticket updated successfully."));
 
         // Exit open ticket edit mode
         m_openTicketEditMode = false;
@@ -1377,7 +1420,7 @@ void RegisterWindow::saveAsOpenTicket()
         query.addBindValue(QVariant()); // due_date
 
         if (!query.exec()) {
-            AppHelpers::showError(this, "Failed to save ticket.\n\n" + query.lastError().text());
+            AppHelpers::showError(this, tr("Failed to save ticket.\n\n") + query.lastError().text());
             return;
         }
 
@@ -1404,7 +1447,7 @@ void RegisterWindow::saveAsOpenTicket()
         if (m_notifier)
             m_notifier->notifyChange(ChangeType::TICKET_CREATED, ticketId);
 
-        AppHelpers::showInfo(this, QString("Ticket #%1 saved as open.").arg(ticketNumber));
+        AppHelpers::showInfo(this, QString(tr("Ticket #%1 saved as open.")).arg(ticketNumber));
     }
 
     clearCart();
@@ -1421,7 +1464,7 @@ void RegisterWindow::completeOpenTicket(int ticketId)
     itemQuery.addBindValue(ticketId);
 
     if (!itemQuery.exec()) {
-        AppHelpers::showError(this, "Failed to load ticket items.");
+        AppHelpers::showError(this, tr("Failed to load ticket items."));
         return;
     }
 
@@ -1445,7 +1488,7 @@ void RegisterWindow::completeOpenTicket(int ticketId)
             if (chk.exec() && chk.next()) {
                 if (!chk.value("is_service").toBool() &&
                     chk.value("stock").toInt() < qty)
-                    insufficientItems << QString("- %1 (need %2)").arg(name).arg(qty);
+                    insufficientItems << QString(tr("- %1 (need %2)")).arg(name).arg(qty);
             }
         } else if (productId > 0) {
             QSqlQuery chk(m_db->database());
@@ -1454,16 +1497,16 @@ void RegisterWindow::completeOpenTicket(int ticketId)
             if (chk.exec() && chk.next()) {
                 if (!chk.value("is_service").toBool() &&
                     chk.value("stock_quantity").toInt() < qty)
-                    insufficientItems << QString("- %1 (need %2)").arg(name).arg(qty);
+                    insufficientItems << QString(tr("- %1 (need %2)")).arg(name).arg(qty);
             }
         }
     }
 
     if (!insufficientItems.isEmpty()) {
         AppHelpers::showWarning(this,
-                                "The following items no longer have enough stock:\n\n" +
+                                tr("The following items no longer have enough stock:\n\n") +
                                     insufficientItems.join("\n") +
-                                    "\n\nPlease edit the ticket before completing.");
+                                    tr("\n\nPlease edit the ticket before completing."));
         return;
     }
 
@@ -1475,7 +1518,7 @@ void RegisterWindow::completeOpenTicket(int ticketId)
     upd.addBindValue(ticketId);
 
     if (!upd.exec()) {
-        AppHelpers::showError(this, "Failed to complete ticket.\n\n" + upd.lastError().text());
+        AppHelpers::showError(this, tr("Failed to complete ticket.\n\n") + upd.lastError().text());
         return;
     }
 
@@ -1540,8 +1583,8 @@ void RegisterWindow::enterOpenTicketEditMode(int ticketId)
 
     if (!m_cart.isEmpty()) {
         if (!AppHelpers::confirmAction(this,
-                                       "There are items in the current cart.\n"
-                                       "Loading the ticket to edit will clear the cart. Continue?"))
+                                       tr("There are items in the current cart.\n"
+                                       "Loading the ticket to edit will clear the cart. Continue?")))
             return;
     }
 
@@ -1551,7 +1594,7 @@ void RegisterWindow::enterOpenTicketEditMode(int ticketId)
     meta.addBindValue(ticketId);
 
     if (!meta.exec() || !meta.next()) {
-        AppHelpers::showError(this, "Failed to load ticket details.");
+        AppHelpers::showError(this, tr("Failed to load ticket details."));
         return;
     }
 
@@ -1569,9 +1612,9 @@ void RegisterWindow::enterOpenTicketEditMode(int ticketId)
     m_openTicketEditId   = ticketId;
 
     // Update UI
-    UIMap::confirmBtn->setText("Confirm Sale");
-    UIMap::cancelBtn->setText("Cancel");
-    setWindowTitle("POSBox - Register  [EDITING OPEN TICKET]");
+    UIMap::confirmBtn->setText(tr("Confirm Sale"));
+    UIMap::cancelBtn->setText(tr("Cancel"));
+    setWindowTitle(tr("POSBox - Register  [EDITING OPEN TICKET]"));
     updateOpenTicketButton();
 }
 
@@ -1580,12 +1623,12 @@ void RegisterWindow::enterOpenTicketEditMode(int ticketId)
 void RegisterWindow::showTicketCompletedDialog(int ticketId)
 {
     QMessageBox msgBox(this);
-    msgBox.setWindowTitle("Ticket Completed");
-    msgBox.setText("Ticket completed and stock updated.");
-    msgBox.setInformativeText("Would you like to print this ticket?");
+    msgBox.setWindowTitle(tr("Ticket Completed"));
+    msgBox.setText(tr("Ticket completed and stock updated."));
+    msgBox.setInformativeText(tr("Would you like to print this ticket?"));
 
-    QPushButton* printBtn = new QPushButton("Print Ticket", &msgBox);
-    QPushButton* closeBtn = new QPushButton("Close", &msgBox);
+    QPushButton* printBtn = new QPushButton(tr("Print Ticket"), &msgBox);
+    QPushButton* closeBtn = new QPushButton(tr("Close"), &msgBox);
     printBtn->setObjectName("btnStyle-add");
     closeBtn->setObjectName("btnStyle-delete");
 
@@ -1650,7 +1693,7 @@ void RegisterWindow::printTicket(int ticketId)
                 ThermalPrinter::TicketItem item;
                 const QString name = q.value("product_name").toString();
                 const QString variant = q.value("variant_name").toString();
-                item.name       = variant.isEmpty() ? name : QString("%1 - %2").arg(name, variant);
+                item.name       = variant.isEmpty() ? name : QString(tr("%1 - %2")).arg(name, variant);
                 item.quantity   = q.value("quantity").toInt();
                 item.unitPrice  = q.value("unit_price").toDouble();
                 items << item;
@@ -1668,7 +1711,7 @@ void RegisterWindow::printTicket(int ticketId)
 
     ThermalPrinter printer(m_db->database());
     if (!printer.print(data)) {
-        AppHelpers::showError(this, "Failed to print ticket.\n\n" + printer.lastError());
+        AppHelpers::showError(this, tr("Failed to print ticket.\n\n") + printer.lastError());
     }
 }
 

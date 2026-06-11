@@ -35,27 +35,27 @@ void InventoryUIMap::initialize(Ui::MainWindow* ui)
 
     // Initial states
     if (searchBox) {
-        searchBox->setPlaceholderText("Search...");
+        searchBox->setPlaceholderText("");
     }
 
     if (editBtn) {
         editBtn->setEnabled(false);
-        editBtn->setText("Edit");
+        editBtn->setText("");
     }
 
     if (deleteBtn) {
         deleteBtn->setEnabled(false);
-        deleteBtn->setText("Delete");
+        deleteBtn->setText("");
     }
 
     if (addBtn) {
-        addBtn->setText("Add");
+        addBtn->setText("");
     }
 
     if (tableSelect) {
-        tableSelect->addItem("Products");
-        tableSelect->addItem("Categories");
-        tableSelect->addItem("Discounts");
+        tableSelect->addItem("");
+        tableSelect->addItem("");
+        tableSelect->addItem("");
     }
 
     if (logoutBtn) {
@@ -63,7 +63,7 @@ void InventoryUIMap::initialize(Ui::MainWindow* ui)
         logoutBtn->setIcon(QIcon(StyleManager::iconPath("logout")));
         logoutBtn->setIconSize(QSize(22, 22));
         logoutBtn->setFixedSize(36, 36);
-        logoutBtn->setToolTip("Logout");
+        logoutBtn->setToolTip("");
     }
 
     qDebug() << "InventoryUIMap initialized successfully";

@@ -44,9 +44,7 @@ private slots:
 private:
     // Document generation
     void generateInvoiceDocument(QTextDocument* document, int ticketId, const CustomerInvoiceData& customerData);
-    void addCompanyHeader(QTextCursor& cursor);
     void addInvoiceTitle(QTextCursor& cursor, const QString& ticketNumber, const QString& date);
-    void addCompanyInfo(QTextCursor& cursor);
     void addCustomerDetails(QTextCursor& cursor, const CustomerInvoiceData& customerData);
     void addItemsTable(QTextCursor& cursor, const QList<QSqlRecord>& items,
                        double subtotal, double discountAmount, double total);
@@ -63,16 +61,11 @@ private:
     QList<QSqlRecord> getTicketItemsRecord(int ticketId);
     QString documentsRootPath() const;
 
-    // Number to French words (for invoice total line)
-    QString numberToFrenchWords(double amount);
-    QString formatCurrency(double amount);
-
     // Text format helpers
     QTextCharFormat getTitleFormat();
     QTextCharFormat getHeaderFormat();
     QTextCharFormat getNormalFormat();
     QTextCharFormat getBoldFormat();
-    QTextCharFormat getCompanyNameFormat();
     QTextBlockFormat getCenterFormat();
     QTextBlockFormat getLeftFormat();
     QTextBlockFormat getRightFormat();

@@ -16,7 +16,7 @@ CustomItemDialog::CustomItemDialog(QWidget* parent)
     , m_priceEdit(nullptr)
 {
     setObjectName("custom-item-dialog");
-    setWindowTitle("Add Custom Item");
+    setWindowTitle(tr("Add Custom Item"));
     setModal(true);
     setFixedWidth(320);
 
@@ -32,7 +32,7 @@ void CustomItemDialog::setupUI()
     mainLayout->setSpacing(12);
 
     // Title
-    QLabel* titleLabel = new QLabel("Custom Item", this);
+    QLabel* titleLabel = new QLabel(tr("Custom Item"), this);
     titleLabel->setObjectName("custom-item-title");
     titleLabel->setAlignment(Qt::AlignCenter);
     mainLayout->addWidget(titleLabel);
@@ -44,21 +44,21 @@ void CustomItemDialog::setupUI()
 
     m_nameEdit = new QLineEdit(this);
     m_nameEdit->setObjectName("custom-item-field");
-    m_nameEdit->setPlaceholderText("Item name");
+    m_nameEdit->setPlaceholderText(tr("Item name"));
 
     m_costEdit = new QLineEdit(this);
     m_costEdit->setObjectName("custom-item-field");
-    m_costEdit->setPlaceholderText("0.000");
-    m_costEdit->setValidator(new QDoubleValidator(0.0, 999999.0, 3, this));
+    m_costEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
+    m_costEdit->setValidator(new QDoubleValidator(0.0, 999999.0, AppConstants::PRICE_DECIMALS, this));
 
     m_priceEdit = new QLineEdit(this);
     m_priceEdit->setObjectName("custom-item-field");
-    m_priceEdit->setPlaceholderText("0.000");
-    m_priceEdit->setValidator(new QDoubleValidator(0.0, 999999.0, 3, this));
+    m_priceEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
+    m_priceEdit->setValidator(new QDoubleValidator(0.0, 999999.0, AppConstants::PRICE_DECIMALS, this));
 
-    QLabel* nameLabel  = new QLabel("Name:",  this);
-    QLabel* costLabel  = new QLabel("Cost:",  this);
-    QLabel* priceLabel = new QLabel("Price:", this);
+    QLabel* nameLabel  = new QLabel(tr("Name:"),  this);
+    QLabel* costLabel  = new QLabel(tr("Cost:"),  this);
+    QLabel* priceLabel = new QLabel(tr("Price:"), this);
     nameLabel->setObjectName("custom-item-label");
     costLabel->setObjectName("custom-item-label");
     priceLabel->setObjectName("custom-item-label");
@@ -72,13 +72,13 @@ void CustomItemDialog::setupUI()
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(8);
 
-    QPushButton* okBtn = new QPushButton("Add to Cart", this);
+    QPushButton* okBtn = new QPushButton(tr("Add to Cart"), this);
     okBtn->setObjectName("custom-item-ok");
     okBtn->setProperty("btnStyle", "add");
     okBtn->style()->unpolish(okBtn);
     okBtn->style()->polish(okBtn);
 
-    QPushButton* cancelBtn = new QPushButton("Cancel", this);
+    QPushButton* cancelBtn = new QPushButton(tr("Cancel"), this);
     cancelBtn->setObjectName("custom-item-cancel");
     cancelBtn->setProperty("btnStyle", "delete");
     cancelBtn->style()->unpolish(cancelBtn);
@@ -97,13 +97,13 @@ void CustomItemDialog::setupUI()
 void CustomItemDialog::onOkClicked()
 {
     if (m_nameEdit->text().trimmed().isEmpty()) {
-        AppHelpers::showWarning(this, "Please enter an item name.");
+        AppHelpers::showWarning(this, tr("Please enter an item name."));
         m_nameEdit->setFocus();
         return;
     }
 
     if (m_priceEdit->text().trimmed().isEmpty()) {
-        AppHelpers::showWarning(this, "Please enter a price.");
+        AppHelpers::showWarning(this, tr("Please enter a price."));
         m_priceEdit->setFocus();
         return;
     }

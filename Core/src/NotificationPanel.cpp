@@ -35,16 +35,16 @@ NotificationPanel::NotificationPanel(NotificationManager* manager, const QString
     headerLayout->setContentsMargins(12, 0, 12, 0);
     headerLayout->setSpacing(8);
     
-    QLabel* title = new QLabel("Notifications", header);
+    QLabel* title = new QLabel(tr("Notifications"), header);
     
     QPushButton* refreshBtn = new QPushButton(header);
     refreshBtn->setIcon(QIcon(StyleManager::iconPath("refresh")));
     refreshBtn->setIconSize(QSize(18, 18));
     refreshBtn->setFixedSize(26, 26);
-    refreshBtn->setToolTip("Refresh notifications");
+    refreshBtn->setToolTip(tr("Refresh notifications"));
     connect(refreshBtn, &QPushButton::clicked, this, &NotificationPanel::onRefreshClicked);
     
-    QPushButton* markAllBtn = new QPushButton("Mark all read", header);
+    QPushButton* markAllBtn = new QPushButton(tr("Mark all read"), header);
     connect(markAllBtn, &QPushButton::clicked, this, &NotificationPanel::onMarkAllReadClicked);
     
     headerLayout->addWidget(title);
@@ -66,7 +66,7 @@ NotificationPanel::NotificationPanel(NotificationManager* manager, const QString
     m_contentLayout->setSpacing(4);
     m_contentLayout->addStretch();
     
-    m_emptyLabel = new QLabel("No notifications", m_contentWidget);
+    m_emptyLabel = new QLabel(tr("No notifications"), m_contentWidget);
     m_emptyLabel->setAlignment(Qt::AlignCenter);
     m_emptyLabel->setMinimumHeight(60);
     m_contentLayout->insertWidget(0, m_emptyLabel);

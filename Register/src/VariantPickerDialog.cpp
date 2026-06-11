@@ -22,7 +22,7 @@ VariantPickerDialog::VariantPickerDialog(const QString& productName,
     , m_isService(isService)
 {
     setObjectName("variant-picker-dialog");
-    setWindowTitle("Select Variant");
+    setWindowTitle(tr("Select Variant"));
     setModal(true);
     setFixedWidth(320);
 
@@ -54,13 +54,13 @@ void VariantPickerDialog::setupUI(const QString& productName)
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(8);
 
-    QPushButton* okBtn = new QPushButton("OK", this);
+    QPushButton* okBtn = new QPushButton(tr("OK"), this);
     okBtn->setObjectName("variant-picker-ok");
     okBtn->setProperty("btnStyle", "add");
     okBtn->style()->unpolish(okBtn);
     okBtn->style()->polish(okBtn);
 
-    QPushButton* cancelBtn = new QPushButton("Cancel", this);
+    QPushButton* cancelBtn = new QPushButton(tr("Cancel"), this);
     cancelBtn->setObjectName("variant-picker-cancel");
     cancelBtn->setProperty("btnStyle", "delete");
     cancelBtn->style()->unpolish(cancelBtn);
@@ -108,9 +108,9 @@ void VariantPickerDialog::loadVariants(int productId, bool isService)
         } else {
             QString stockStr;
             if (opt.stock <= 0) {
-                stockStr = " (Out of Stock)";
+                stockStr = tr(" (Out of Stock)");
             } else {
-                stockStr = QString(" (%1 left)").arg(opt.stock);
+                stockStr = QString(tr(" (%1 left)")).arg(opt.stock);
             }
             label = QString("%1  —  %2%3")
                         .arg(opt.name)

@@ -17,18 +17,15 @@ LIBS += -L$$OUT_PWD/../lib -lCore
 SOURCES += \
     src/TicketPrintManager.cpp \
     src/TicketWindow.cpp \
-    src/TicketsMain.cpp \
-    src/CustomerInvoiceDialog.cpp
+    src/TicketsMain.cpp
 
 # Headers
 HEADERS += \
     include/TicketPrintManager.h \
-    include/TicketWindow.h \
-    include/CustomerInvoiceDialog.h
+    include/TicketWindow.h
 
 FORMS += \
-    ui/TicketWindow.ui \
-    ui/customerinvoicedialog.ui
+    ui/TicketWindow.ui
 
 # Resources
 RESOURCES += \

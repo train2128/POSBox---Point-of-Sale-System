@@ -63,7 +63,6 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
 
     // Withdraw button styling
     if (withdrawBtn) {
-        withdrawBtn->setText("Withdraw");
         withdrawBtn->setStyleSheet(
             "QPushButton { "
             "    background-color: #E74C3C; "
@@ -99,17 +98,17 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
     // ===== TOP BAR =====
 
     if (searchBar) {
-        searchBar->setPlaceholderText("Search products or scan barcode...");
+        searchBar->setPlaceholderText("");
     }
 
     if (totalLabel) {
         totalLabel->setObjectName("totalLabel");
-        totalLabel->setText(QString("Total: 0.000 %1").arg(AppConstants::CURRENCY));
+        totalLabel->setText("");
         totalLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     }
 
     if (ticketsBtn) {
-        ticketsBtn->setText("Tickets");
+        ticketsBtn->setText("");
     }
 
     // Notification button — icon only, square
@@ -118,7 +117,7 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
         notificationBtn->setIcon(QIcon(StyleManager::iconPath("notification")));
         notificationBtn->setIconSize(QSize(22, 22));
         notificationBtn->setFixedSize(36, 36);
-        notificationBtn->setToolTip("Notifications");
+        notificationBtn->setToolTip("");
     }
 
     // Logout button — icon only, square
@@ -127,19 +126,19 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
         logoutBtn->setIcon(QIcon(StyleManager::iconPath("logout")));
         logoutBtn->setIconSize(QSize(22, 22));
         logoutBtn->setFixedSize(36, 36);
-        logoutBtn->setToolTip("Logout");
+        logoutBtn->setToolTip("");
     }
 
     // ===== PRODUCTS SECTION =====
 
     if (customItemBtn) {
-        customItemBtn->setText("Custom Item");
+        customItemBtn->setText("");
     }
 
     // ===== CART SECTION =====
 
     if (openTicketsBtn) {
-        openTicketsBtn->setText("Open Tickets");
+        openTicketsBtn->setText("");
     }
 
     // Discount button — icon only, square
@@ -148,12 +147,12 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
         discountBtn->setIcon(QIcon(StyleManager::iconPath("discount")));
         discountBtn->setIconSize(QSize(22, 22));
         discountBtn->setFixedSize(36, 36);
-        discountBtn->setToolTip("Apply Discount");
+        discountBtn->setToolTip("");
     }
 
     // Confirm — green
     if (confirmBtn) {
-        confirmBtn->setText("Confirm");
+        confirmBtn->setText("");
         confirmBtn->setProperty("btnStyle", "add");
         confirmBtn->style()->unpolish(confirmBtn);
         confirmBtn->style()->polish(confirmBtn);
@@ -161,7 +160,7 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
 
     // Cancel — red
     if (cancelBtn) {
-        cancelBtn->setText("Cancel");
+        cancelBtn->setText("");
         cancelBtn->setProperty("btnStyle", "delete");
         cancelBtn->style()->unpolish(cancelBtn);
         cancelBtn->style()->polish(cancelBtn);

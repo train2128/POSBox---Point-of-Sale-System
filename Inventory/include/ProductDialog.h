@@ -48,8 +48,8 @@ private:
     bool saveProduct();
     bool updateProduct();
 
-    // Strips " TND" suffix and returns raw double string
-    QString stripTND(const QString& text) const;
+    // Strips trailing currency suffix and returns raw double string
+    QString stripCurrency(const QString& text) const;
 
     Ui::Dialog*           ui;
     DatabaseManager*      m_db;

@@ -10,10 +10,12 @@
 #include "StyleManager.h"
 #include "ChangeNotifier.h"
 #include "CommonConfig.h"
+#include "Prefixes.h"
 #include "ActiveSessionManager.h"
 #include "RegisterWindow.h"
 #include "TicketEditRequest.h"
 #include "RegisterLock.h"
+#include "TranslationManager.h"
 
 int main(int argc, char *argv[])
 {
@@ -29,8 +31,8 @@ int main(int argc, char *argv[])
     // Step 1: Ensure database exists
     DatabaseCreator dbCreator;
     if (!dbCreator.ensureDatabaseExists()) {
-        QMessageBox::critical(nullptr, "Database Error",
-                              QString("Failed to initialize database:\n%1\n\nApplication will exit.")
+        QMessageBox::critical(nullptr, QObject::tr("Database Error"),
+                              QString(QObject::tr("Failed to initialize database:\n%1\n\nApplication will exit."))
                                   .arg(dbCreator.lastError()));
         return 1;
     }
@@ -40,19 +42,22 @@ int main(int argc, char *argv[])
     // Step 2: Open database connection
     DatabaseManager* dbManager = new DatabaseManager(&app, "register_connection");
     if (!dbManager->isOpen()) {
-        QMessageBox::critical(nullptr, "Database Error",
-                              QString("Failed to open database:\n%1\n\nApplication will exit.")
+        QMessageBox::critical(nullptr, QObject::tr("Database Error"),
+                              QString(QObject::tr("Failed to open database:\n%1\n\nApplication will exit."))
                                   .arg(dbManager->lastError()));
         return 1;
     }
 
     qDebug() << "Database connection established";
 
+    AppHelpers::loadCurrencyConfig(dbManager->database());
+    TranslationManager::instance().init(dbManager->database());
+
     // Step 4: Create authentication provider
     LocalDatabaseAuth* authProvider = new LocalDatabaseAuth(dbManager);
     if (!authProvider->isAvailable()) {
-        QMessageBox::critical(nullptr, "Authentication Error",
-                              "Authentication system not available. Application will exit.");
+        QMessageBox::critical(nullptr, QObject::tr("Authentication Error"),
+                              QObject::tr("Authentication system not available. Application will exit."));
         return 1;
     }
 
@@ -101,8 +106,8 @@ int main(int argc, char *argv[])
             }
 
             if (!loginDialog.isAuthenticated()) {
-                QMessageBox::warning(nullptr, "Authentication Failed",
-                                     "Failed to authenticate. Please try again.");
+                QMessageBox::warning(nullptr, QObject::tr("Authentication Failed"),
+                                     QObject::tr("Failed to authenticate. Please try again."));
                 continue;  // Try again
             }
 
@@ -129,15 +134,15 @@ int main(int argc, char *argv[])
         }
 
         if (sessionId < 0) {
-            QMessageBox::critical(nullptr, "Session Error",
-                                  "Failed to create user session. Application will exit.");
+            QMessageBox::critical(nullptr, QObject::tr("Session Error"),
+                                  QObject::tr("Failed to create user session. Application will exit."));
             break;
         }
 
         UserSession* session = SessionManager::instance().getSession(sessionId);
         if (!session) {
-            QMessageBox::critical(nullptr, "Session Error",
-                                  "Failed to retrieve session. Application will exit.");
+            QMessageBox::critical(nullptr, QObject::tr("Session Error"),
+                                  QObject::tr("Failed to retrieve session. Application will exit."));
             break;
         }
 

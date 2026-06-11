@@ -2,6 +2,7 @@
 #include "DatabaseManager.h"
 #include "QueryRepository.h"
 #include "CommonConfig.h"
+#include "Prefixes.h"
 #include <QTextDocument>
 #include <QPrintPreviewDialog>
 #include <QPrinter>
@@ -26,6 +27,7 @@
 #include <QPixmap>
 #include <QFile>
 #include <QDate>
+#include <QLocale>
 #include <QDebug>
 #include <QDir>
 #include <QStandardPaths>
@@ -71,7 +73,7 @@ void TicketPrintManager::printTicketWithPreview(int ticketId, const CustomerInvo
     printer.setFromTo(0, 0);
 
     QPrintPreviewDialog preview(&printer, m_parent);
-    preview.setWindowTitle("Print Preview - Invoice");
+    preview.setWindowTitle(tr("Print Preview - Invoice"));
     preview.resize(900, 700);
 
     connect(&preview, &QPrintPreviewDialog::paintRequested,
@@ -104,11 +106,9 @@ void TicketPrintManager::generateInvoiceDocument(QTextDocument* document, int ti
 
     QTextCursor cursor(document);
 
-    addCompanyHeader(cursor);
     addInvoiceTitle(cursor,
                     ticketRecord.value("ticket_number").toString(),
                     ticketRecord.value("date").toString());
-    addCompanyInfo(cursor);
 
     if (!customerData.isEmpty()) {
         addCustomerDetails(cursor, customerData);
@@ -128,47 +128,6 @@ void TicketPrintManager::generateInvoiceDocument(QTextDocument* document, int ti
     addFooter(cursor);
 }
 
-// ── Header (logo) ─────────────────────────────────────────────────────────────
-
-void TicketPrintManager::addCompanyHeader(QTextCursor& cursor)
-{
-    QSqlRecord shopProfile = getShopProfileRecord();
-
-    // logo_path stores only the relative filename — reconstruct the full path at runtime
-    QString logoFilename = shopProfile.value("logo_path").toString();
-    QString logoPath;
-    if (!logoFilename.isEmpty()) {
-        logoPath = POSConfig::getAppDataPath()
-        + POSConfig::LOGO_IMAGE_FOLDER
-            + "/" + logoFilename;
-    }
-
-    QTextTableFormat tableFormat;
-    tableFormat.setBorder(0);
-    tableFormat.setCellPadding(0);
-    tableFormat.setCellSpacing(0);
-    tableFormat.setWidth(QTextLength(QTextLength::PercentageLength, 100));
-
-    QTextTable* logoTable = cursor.insertTable(1, 1, tableFormat);
-
-    if (!logoPath.isEmpty() && QFile::exists(logoPath)) {
-        QPixmap logo(logoPath);
-        if (!logo.isNull()) {
-            logo = logo.scaledToHeight(100, Qt::SmoothTransformation);
-
-            QTextBlockFormat format;
-            format.setAlignment(Qt::AlignRight);
-            QTextCursor cellCursor = logoTable->cellAt(0, 0).firstCursorPosition();
-            cellCursor.setBlockFormat(format);
-            cellCursor.insertImage(logo.toImage(), logoPath);
-        }
-    }
-
-    cursor.movePosition(QTextCursor::End);
-    cursor.insertBlock();
-    cursor.insertBlock();
-}
-
 // ── Invoice title and date ────────────────────────────────────────────────────
 
 void TicketPrintManager::addInvoiceTitle(QTextCursor& cursor,
@@ -176,7 +135,7 @@ void TicketPrintManager::addInvoiceTitle(QTextCursor& cursor,
                                          const QString& date)
 {
     cursor.insertBlock(getLeftFormat());
-    cursor.insertText("Facture No. " + ticketNumber, getTitleFormat());
+    cursor.insertText(tr("Invoice No. ") + ticketNumber, getTitleFormat());
 
     cursor.insertBlock();
 
@@ -187,54 +146,10 @@ void TicketPrintManager::addInvoiceTitle(QTextCursor& cursor,
     // Use the ticket's own date, fall back to today
     QDate ticketDate = QDate::fromString(date, "yyyy-MM-dd");
     QString dateStr = ticketDate.isValid()
-                          ? ticketDate.toString("dd/MM/yyyy")
-                          : QDate::currentDate().toString("dd/MM/yyyy");
+                          ? ticketDate.toString(QLocale::system().dateFormat(QLocale::ShortFormat))
+                          : QDate::currentDate().toString(QLocale::system().dateFormat(QLocale::ShortFormat));
 
-    cursor.insertText("Le " + dateStr, getBoldFormat());
-    cursor.insertBlock();
-}
-
-// ── Company info (from shop_profile) ─────────────────────────────────────────
-
-void TicketPrintManager::addCompanyInfo(QTextCursor& cursor)
-{
-    QSqlRecord shopProfile = getShopProfileRecord();
-    if (shopProfile.isEmpty()) return;
-
-    QString shopName = shopProfile.value("shop_name").toString();
-    QString taxId    = shopProfile.value("tax_id").toString();
-    QString address  = shopProfile.value("address").toString();
-    QString postal   = shopProfile.value("postal").toString();
-    QString city     = shopProfile.value("city").toString();
-
-    cursor.insertBlock(getLeftFormat());
-    cursor.insertText(shopName, getCompanyNameFormat());
-    cursor.insertBlock(getLeftFormat());
-    cursor.insertBlock();
-
-    if (!taxId.isEmpty()) {
-        cursor.insertText("M.F: " + taxId, getNormalFormat());
-        cursor.insertBlock(getLeftFormat());
-    }
-
-    if (!address.isEmpty()) {
-        cursor.insertText(address, getNormalFormat());
-        cursor.insertBlock(getLeftFormat());
-    }
-
-    QString location;
-    if (!postal.isEmpty() && !city.isEmpty())
-        location = postal + " " + city;
-    else if (!postal.isEmpty())
-        location = postal;
-    else if (!city.isEmpty())
-        location = city;
-
-    if (!location.isEmpty()) {
-        cursor.insertText(location, getNormalFormat());
-        cursor.insertBlock(getLeftFormat());
-    }
-
+    cursor.insertText(dateStr, getBoldFormat());
     cursor.insertBlock();
 }
 
@@ -247,13 +162,13 @@ void TicketPrintManager::addCustomerDetails(QTextCursor& cursor, const CustomerI
     cursor.insertBlock(getLeftFormat());
     cursor.insertBlock(getLeftFormat());
 
-    // Client name on same line as "Client:"
-    cursor.insertText("Client: " + customerData.companyName, getBoldFormat());
+    // Client name on same line as "Customer:"
+    cursor.insertText(tr("Customer: ") + customerData.companyName, getBoldFormat());
     cursor.insertBlock(getLeftFormat());
 
     // Matricule Fiscal
     if (!customerData.matriculeFiscal.isEmpty()) {
-        cursor.insertText("M.F: " + customerData.matriculeFiscal, getNormalFormat());
+        cursor.insertText(tr("Tax ID: ") + customerData.matriculeFiscal, getNormalFormat());
         cursor.insertBlock(getLeftFormat());
     }
 
@@ -265,7 +180,7 @@ void TicketPrintManager::addCustomerDetails(QTextCursor& cursor, const CustomerI
 
     // Phone
     if (!customerData.phone.isEmpty()) {
-        cursor.insertText("Phone: " + customerData.phone, getNormalFormat());
+        cursor.insertText(tr("Phone: ") + customerData.phone, getNormalFormat());
         cursor.insertBlock(getLeftFormat());
     }
 
@@ -314,7 +229,7 @@ void TicketPrintManager::addItemsTable(QTextCursor& cursor,
                                        double total)
 {
     if (items.isEmpty()) {
-        cursor.insertText("No items found.", getNormalFormat());
+        cursor.insertText(tr("No items found."), getNormalFormat());
         return;
     }
 
@@ -347,7 +262,7 @@ void TicketPrintManager::addItemsTable(QTextCursor& cursor,
     leftAlign.setAlignment(Qt::AlignLeft);
 
     // ── Header row ────────────────────────────────────────────────────────────
-    const QStringList headers = { "Produit", "Quantité", "Prix Unitaire", "Total" };
+    const QStringList headers = { tr("Product"), tr("Qty"), tr("Unit Price"), tr("Total") };
     for (int col = 0; col < 4; ++col) {
         QTextTableCell cell = table->cellAt(0, col);
         QTextTableCellFormat cellFmt;
@@ -382,8 +297,8 @@ void TicketPrintManager::addItemsTable(QTextCursor& cursor,
             switch (col) {
             case 0: text = item.value("product_name").toString(); break;
             case 1: text = QString::number(item.value("quantity").toInt()); break;
-            case 2: text = formatCurrency(item.value("unit_price").toDouble()); break;
-            case 3: text = formatCurrency(item.value("total_price").toDouble()); break;
+            case 2: text = AppHelpers::formatPrice(item.value("unit_price").toDouble()); break;
+            case 3: text = AppHelpers::formatPrice(item.value("total_price").toDouble()); break;
             }
             cc.insertText(text);
         }
@@ -399,12 +314,12 @@ void TicketPrintManager::addItemsTable(QTextCursor& cursor,
     {
         QTextCursor cc = table->cellAt(subtotalRow, 0).firstCursorPosition();
         cc.setBlockFormat(centerAlign); cc.setCharFormat(getBoldFormat());
-        cc.insertText("SOUS-TOTAL");
+        cc.insertText(tr("SUBTOTAL"));
     }
     {
         QTextCursor cc = table->cellAt(subtotalRow, 3).firstCursorPosition();
         cc.setBlockFormat(centerAlign); cc.setCharFormat(getBoldFormat());
-        cc.insertText(formatCurrency(subtotal));
+        cc.insertText(AppHelpers::formatPrice(subtotal));
     }
 
     // ── Discount row ──────────────────────────────────────────────────────────
@@ -417,12 +332,12 @@ void TicketPrintManager::addItemsTable(QTextCursor& cursor,
     {
         QTextCursor cc = table->cellAt(discountRow, 0).firstCursorPosition();
         cc.setBlockFormat(centerAlign); cc.setCharFormat(getBoldFormat());
-        cc.insertText("REMISE");
+        cc.insertText(tr("DISCOUNT"));
     }
     {
         QTextCursor cc = table->cellAt(discountRow, 3).firstCursorPosition();
         cc.setBlockFormat(centerAlign); cc.setCharFormat(getBoldFormat());
-        cc.insertText("-" + formatCurrency(discountAmount));
+        cc.insertText("-" + AppHelpers::formatPrice(discountAmount));
     }
 
     // ── Total row ─────────────────────────────────────────────────────────────
@@ -435,12 +350,12 @@ void TicketPrintManager::addItemsTable(QTextCursor& cursor,
     {
         QTextCursor cc = table->cellAt(totalRow, 0).firstCursorPosition();
         cc.setBlockFormat(centerAlign); cc.setCharFormat(getBoldFormat());
-        cc.insertText("TOTAL");
+        cc.insertText(tr("TOTAL"));
     }
     {
         QTextCursor cc = table->cellAt(totalRow, 3).firstCursorPosition();
         cc.setBlockFormat(centerAlign); cc.setCharFormat(getBoldFormat());
-        cc.insertText(formatCurrency(total));
+        cc.insertText(AppHelpers::formatPrice(total));
     }
 
     cursor.movePosition(QTextCursor::End);
@@ -453,8 +368,8 @@ void TicketPrintManager::addItemsTable(QTextCursor& cursor,
 void TicketPrintManager::addSummary(QTextCursor& cursor, double total)
 {
     cursor.insertBlock(getLeftFormat());
-    cursor.insertText("Arrêté la présente facture à la somme de : ", getBoldFormat());
-    cursor.insertText(numberToFrenchWords(total), getBoldFormat());
+    cursor.insertText(tr("Total: "), getBoldFormat());
+    cursor.insertText(AppHelpers::formatPrice(total), getBoldFormat());
     cursor.insertBlock();
     cursor.insertBlock();
 }
@@ -465,9 +380,9 @@ void TicketPrintManager::addStampAndSignature(QTextCursor& cursor)
 {
     QSqlRecord shopProfile = getShopProfileRecord();
     QString city = shopProfile.value("city").toString();
-    if (city.isEmpty()) city = "Le";
+    if (city.isEmpty()) city = "";
 
-    QString dateStr = QDate::currentDate().toString("dd/MM/yyyy");
+    QString dateStr = QDate::currentDate().toString(QLocale::system().dateFormat(QLocale::ShortFormat));
 
     QTextTableFormat tableFormat;
     tableFormat.setBorder(0);
@@ -498,7 +413,7 @@ void TicketPrintManager::addStampAndSignature(QTextCursor& cursor)
     centerFormat.setAlignment(Qt::AlignCenter);
 
     frameCursor.insertBlock(centerFormat);
-    frameCursor.insertText("Cachet et signature", getBoldFormat());
+    frameCursor.insertText(tr("Stamp and Signature"), getBoldFormat());
 
     for (int i = 0; i < 3; ++i) {
         frameCursor.insertBlock(centerFormat);
@@ -506,7 +421,7 @@ void TicketPrintManager::addStampAndSignature(QTextCursor& cursor)
     }
 
     frameCursor.insertBlock(centerFormat);
-    frameCursor.insertText(city + " le " + dateStr, getNormalFormat());
+    frameCursor.insertText(city.isEmpty() ? dateStr : city + ", " + dateStr, getNormalFormat());
 
     cursor.movePosition(QTextCursor::End);
     cursor.insertBlock();
@@ -525,9 +440,9 @@ void TicketPrintManager::addFooter(QTextCursor& cursor)
     QString email = shopProfile.value("email").toString();
 
     if (!phone.isEmpty())
-        footerItems.append({ "Tél:", phone });
+        footerItems.append({ tr("Phone:"), phone });
     if (!email.isEmpty())
-        footerItems.append({ "Email:", email });
+        footerItems.append({ tr("Email:"), email });
 
     auto hasField = [&](const QString& field) {
         QString val = shopProfile.value(field).toString();
@@ -535,13 +450,13 @@ void TicketPrintManager::addFooter(QTextCursor& cursor)
     };
 
     if (hasField("facebook"))
-        footerItems.append({ "Facebook:", shopProfile.value("facebook").toString() });
+        footerItems.append({ tr("Facebook:"), shopProfile.value("facebook").toString() });
     if (hasField("instagram"))
-        footerItems.append({ "Instagram:", shopProfile.value("instagram").toString() });
+        footerItems.append({ tr("Instagram:"), shopProfile.value("instagram").toString() });
     if (hasField("tiktok"))
-        footerItems.append({ "TikTok:", shopProfile.value("tiktok").toString() });
+        footerItems.append({ tr("TikTok:"), shopProfile.value("tiktok").toString() });
     if (hasField("whatsapp"))
-        footerItems.append({ "WhatsApp:", shopProfile.value("whatsapp").toString() });
+        footerItems.append({ tr("WhatsApp:"), shopProfile.value("whatsapp").toString() });
 
     if (footerItems.isEmpty()) return;
 
@@ -611,68 +526,6 @@ QList<QSqlRecord> TicketPrintManager::getTicketItemsRecord(int ticketId)
     return items;
 }
 
-// ── Number to French words ────────────────────────────────────────────────────
-
-QString TicketPrintManager::numberToFrenchWords(double amount)
-{
-    static const QString units[] = { "", "un", "deux", "trois", "quatre", "cinq",
-                                    "six", "sept", "huit", "neuf" };
-    static const QString teens[] = { "dix", "onze", "douze", "treize", "quatorze",
-                                    "quinze", "seize", "dix-sept", "dix-huit", "dix-neuf" };
-    static const QString tens[]  = { "", "dix", "vingt", "trente", "quarante", "cinquante",
-                                   "soixante", "soixante", "quatre-vingt", "quatre-vingt-dix" };
-
-    int dinars  = static_cast<int>(amount);
-    int millimes = static_cast<int>(qRound((amount - dinars) * 1000));
-
-    QString dinarPart, millimePart;
-
-    auto convertPart = [&](int value, const QString& singular, const QString& plural) -> QString {
-        if (value == 0) return "";
-        if (value == 1) return QString("un ") + singular;
-        QString result;
-        if (value < 10) {
-            result = units[value];
-        } else if (value < 20) {
-            result = teens[value - 10];
-        } else if (value < 100) {
-            int ten  = value / 10;
-            int unit = value % 10;
-            if (ten == 7 || ten == 9) {
-                result = tens[ten] + "-" + teens[unit];
-            } else {
-                result = tens[ten];
-                if (unit > 0)
-                    result += (ten == 8 && unit == 1) ? "-un" : "-" + units[unit];
-            }
-        }
-        return result + " " + (value == 1 ? singular : plural);
-    };
-
-    dinarPart   = convertPart(dinars,   "dinar",   "dinars");
-    millimePart = convertPart(millimes, "millime", "millimes");
-
-    QString result;
-    if (!dinarPart.isEmpty() && !millimePart.isEmpty())
-        result = dinarPart + " et " + millimePart;
-    else if (!dinarPart.isEmpty())
-        result = dinarPart;
-    else if (!millimePart.isEmpty())
-        result = millimePart;
-    else
-        result = "zéro dinars";
-
-    if (!result.isEmpty())
-        result[0] = result[0].toUpper();
-
-    return result;
-}
-
-QString TicketPrintManager::formatCurrency(double amount)
-{
-    return QString("%1 TND").arg(amount, 0, 'f', 3);
-}
-
 // ── Text format helpers ───────────────────────────────────────────────────────
 
 QTextCharFormat TicketPrintManager::getTitleFormat()
@@ -704,14 +557,6 @@ QTextCharFormat TicketPrintManager::getBoldFormat()
     QTextCharFormat f;
     f.setFont(QFont("Arial", 10, QFont::Bold));
     f.setForeground(QBrush(Qt::black));
-    return f;
-}
-
-QTextCharFormat TicketPrintManager::getCompanyNameFormat()
-{
-    QTextCharFormat f;
-    f.setFont(QFont("Arial", 14, QFont::Bold));
-    f.setForeground(QBrush(QColor("#2F5496")));
     return f;
 }
 

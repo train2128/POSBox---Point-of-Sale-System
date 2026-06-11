@@ -27,6 +27,8 @@ public:
                           QWidget* parent = nullptr);
     ~TicketWindow();
 
+    void retranslateUi();
+
 private slots:
     void onLogoutClicked();
     void onDateChanged(const QDate& date);

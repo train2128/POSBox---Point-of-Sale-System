@@ -11,6 +11,7 @@
 #include "StyleManager.h"
 #include "LogoutManager.h"
 #include "Prefixes.h"
+#include "TranslationManager.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QTableWidgetItem>
@@ -66,8 +67,6 @@ InventoryWindow::~InventoryWindow()
 
 void InventoryWindow::setupUI()
 {
-    setWindowTitle("POSBox - Inventory");
-
     m_searchTimer->setSingleShot(true);
     m_searchTimer->setInterval(AppConstants::SEARCH_DELAY_MS);
 
@@ -95,6 +94,46 @@ void InventoryWindow::setupUI()
         hh->setSectionsClickable(false);
         t->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
     }
+
+    retranslateUi();
+}
+
+void InventoryWindow::retranslateUi()
+{
+    setWindowTitle(tr("POSBox - Inventory"));
+
+    // UIMap elements
+    if (InventoryUIMap::searchBox)
+        InventoryUIMap::searchBox->setPlaceholderText(tr("Search..."));
+    if (InventoryUIMap::editBtn)
+        InventoryUIMap::editBtn->setText(tr("Edit"));
+    if (InventoryUIMap::deleteBtn)
+        InventoryUIMap::deleteBtn->setText(tr("Delete"));
+    if (InventoryUIMap::addBtn)
+        InventoryUIMap::addBtn->setText(tr("Add"));
+    if (InventoryUIMap::tableSelect) {
+        InventoryUIMap::tableSelect->setItemText(0, tr("Products"));
+        InventoryUIMap::tableSelect->setItemText(1, tr("Categories"));
+        InventoryUIMap::tableSelect->setItemText(2, tr("Discounts"));
+    }
+    if (InventoryUIMap::logoutBtn)
+        InventoryUIMap::logoutBtn->setToolTip(tr("Logout"));
+
+    // Table headers
+    if (!InventoryUIMap::mainTable) return;
+
+    QTableWidget* t = InventoryUIMap::mainTable;
+    switch (m_currentTable) {
+    case InventoryConstants::TABLE_PRODUCTS:
+        t->setHorizontalHeaderLabels({tr("ID"), tr("Name"), tr("Stock"), tr("Cost"), tr("Price")});
+        break;
+    case InventoryConstants::TABLE_CATEGORIES:
+        t->setHorizontalHeaderLabels({tr("Name"), tr("Description")});
+        break;
+    case InventoryConstants::TABLE_DISCOUNTS:
+        t->setHorizontalHeaderLabels({tr("Name"), tr("Value"), tr("Active"), tr("End Date")});
+        break;
+    }
 }
 
 void InventoryWindow::setupConnections()
@@ -119,6 +158,9 @@ void InventoryWindow::setupConnections()
             this, &InventoryWindow::onCellDoubleClicked);
     connect(InventoryUIMap::mainTable, &QTableWidget::cellChanged,
             this, &InventoryWindow::onCellChanged);
+
+    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
+            this, &InventoryWindow::retranslateUi);
 
     if (m_notifier) {
         connect(m_notifier, &ChangeNotifier::productChanged,
@@ -147,7 +189,7 @@ void InventoryWindow::setupTableHeaders(int tableIndex)
 
     case InventoryConstants::TABLE_PRODUCTS:
         t->setColumnCount(InventoryConstants::PRODUCT_COL_COUNT);
-        t->setHorizontalHeaderLabels({"ID", "Name", "Stock", "Cost", "Price"});
+        t->setHorizontalHeaderLabels({tr("ID"), tr("Name"), tr("Stock"), tr("Cost"), tr("Price")});
         h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_ID,    QHeaderView::Fixed);
         h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_NAME,  QHeaderView::Stretch);
         h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_STOCK, QHeaderView::Fixed);
@@ -161,7 +203,7 @@ void InventoryWindow::setupTableHeaders(int tableIndex)
 
     case InventoryConstants::TABLE_CATEGORIES:
         t->setColumnCount(InventoryConstants::CATEGORY_COL_COUNT);
-        t->setHorizontalHeaderLabels({"Name", "Description"});
+        t->setHorizontalHeaderLabels({tr("Name"), tr("Description")});
         h->setSectionResizeMode(InventoryConstants::COL_CATEGORY_NAME,        QHeaderView::Fixed);
         h->setSectionResizeMode(InventoryConstants::COL_CATEGORY_DESCRIPTION, QHeaderView::Stretch);
         applyCategoryColumnRatio();
@@ -169,7 +211,7 @@ void InventoryWindow::setupTableHeaders(int tableIndex)
 
     case InventoryConstants::TABLE_DISCOUNTS:
         t->setColumnCount(InventoryConstants::DISCOUNT_COL_COUNT);
-        t->setHorizontalHeaderLabels({"Name", "Value", "Active", "End Date"});
+        t->setHorizontalHeaderLabels({tr("Name"), tr("Value"), tr("Active"), tr("End Date")});
         h->setSectionResizeMode(InventoryConstants::COL_DISCOUNT_NAME,     QHeaderView::Stretch);
         h->setSectionResizeMode(InventoryConstants::COL_DISCOUNT_VALUE,    QHeaderView::Stretch);
         h->setSectionResizeMode(InventoryConstants::COL_DISCOUNT_ACTIVE,   QHeaderView::Stretch);
@@ -455,7 +497,7 @@ void InventoryWindow::loadDiscounts(const QString& search)
         valueItem->setTextAlignment(Qt::AlignCenter);
         InventoryUIMap::mainTable->setItem(row, InventoryConstants::COL_DISCOUNT_VALUE, valueItem);
 
-        QTableWidgetItem* activeItem = new QTableWidgetItem(isActive ? "Yes" : "No");
+        QTableWidgetItem* activeItem = new QTableWidgetItem(isActive ? tr("Yes") : tr("No"));
         activeItem->setTextAlignment(Qt::AlignCenter);
         InventoryUIMap::mainTable->setItem(row, InventoryConstants::COL_DISCOUNT_ACTIVE, activeItem);
 
@@ -648,7 +690,7 @@ void InventoryWindow::onCellChanged(int row, int column)
     int newStock = stockItem->text().toInt(&ok);
 
     if (!ok || newStock < 0) {
-        AppHelpers::showWarning(this, InventoryConstants::MSG_STOCK_INVALID);
+        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_STOCK_INVALID));
         loadProducts(m_currentSearch);
         m_isEditingStock  = false;
         m_editingStockRow = -1;
@@ -666,7 +708,7 @@ void InventoryWindow::onCellChanged(int row, int column)
 
     if (!query.exec()) {
         qWarning() << "Failed to update stock:" << query.lastError().text();
-        AppHelpers::showError(this, "Failed to update stock.");
+        AppHelpers::showError(this, tr("Failed to update stock."));
         loadProducts(m_currentSearch);
     } else {
         qDebug() << "Stock updated for product" << productId << "to" << newStock;
@@ -709,7 +751,7 @@ void InventoryWindow::onDeleteClicked()
 
     if (m_session && !AccessControl::canPerformAction(
             m_session->username(), AccessControl::DeleteProduct, m_db->database())) {
-        AppHelpers::showWarning(this, "You do not have permission to delete products.");
+        AppHelpers::showWarning(this, tr("You do not have permission to delete products."));
         return;
     }
 
@@ -737,7 +779,7 @@ void InventoryWindow::addProduct()
     if (dialog.exec() == QDialog::Accepted) {
         loadProducts(m_currentSearch);
         if (m_notifier) m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, -1);
-        AppHelpers::showInfo(this, InventoryConstants::MSG_PRODUCT_ADD_SUCCESS);
+        AppHelpers::showInfo(this, tr(InventoryConstants::MSG_PRODUCT_ADD_SUCCESS));
     }
 }
 
@@ -750,7 +792,7 @@ void InventoryWindow::editProduct(int row)
     if (dialog.exec() == QDialog::Accepted) {
         loadProducts(m_currentSearch);
         if (m_notifier) m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, productId);
-        AppHelpers::showInfo(this, InventoryConstants::MSG_PRODUCT_EDIT_SUCCESS);
+        AppHelpers::showInfo(this, tr(InventoryConstants::MSG_PRODUCT_EDIT_SUCCESS));
     }
 }
 
@@ -759,20 +801,20 @@ void InventoryWindow::deleteProduct(int row)
     int productId = getProductIdFromRow(row);
     if (productId <= 0) return;
 
-    if (!AppHelpers::confirmAction(this, InventoryConstants::MSG_PRODUCT_DELETE_CONFIRM)) return;
+    if (!AppHelpers::confirmAction(this, tr(InventoryConstants::MSG_PRODUCT_DELETE_CONFIRM))) return;
 
     QSqlQuery query(m_db->database());
     query.prepare(Queries::PRODUCT_DELETE);
     query.addBindValue(productId);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to delete product: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to delete product: ") + query.lastError().text());
         return;
     }
 
     loadProducts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, productId);
-    AppHelpers::showInfo(this, InventoryConstants::MSG_PRODUCT_DELETE_SUCCESS);
+    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_PRODUCT_DELETE_SUCCESS));
 }
 
 // ===== CATEGORIES CRUD =====
@@ -781,13 +823,13 @@ void InventoryWindow::addCategory()
 {
     if (m_session && !AccessControl::canPerformAction(
             m_session->username(), AccessControl::AddCategory, m_db->database())) {
-        AppHelpers::showWarning(this, "You do not have permission to add categories.");
+        AppHelpers::showWarning(this, tr("You do not have permission to add categories."));
         return;
     }
 
     // ── Single dialog: name + description ────────────────────────────────────
     QDialog dlg(this);
-    dlg.setWindowTitle("Add Category");
+    dlg.setWindowTitle(tr("Add Category"));
     dlg.setFixedWidth(340);
     dlg.setModal(true);
 
@@ -799,21 +841,21 @@ void InventoryWindow::addCategory()
     form->setSpacing(8);
 
     QLineEdit* nameEdit = new QLineEdit(&dlg);
-    nameEdit->setPlaceholderText("Category name");
+    nameEdit->setPlaceholderText(tr("Category name"));
     nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow("Name:", nameEdit);
+    form->addRow(tr("Name:"), nameEdit);
 
     QLineEdit* descEdit = new QLineEdit(&dlg);
-    descEdit->setPlaceholderText("Description (optional)");
+    descEdit->setPlaceholderText(tr("Description (optional)"));
     descEdit->setAlignment(Qt::AlignCenter);
-    form->addRow("Description:", descEdit);
+    form->addRow(tr("Description:"), descEdit);
 
     main->addLayout(form);
 
     QDialogButtonBox* btns = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText("Add");
-    btns->button(QDialogButtonBox::Cancel)->setText("Cancel");
+    btns->button(QDialogButtonBox::Ok)->setText(tr("Add"));
+    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
     connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     main->addWidget(btns);
@@ -824,7 +866,7 @@ void InventoryWindow::addCategory()
 
     const QString name = nameEdit->text().trimmed();
     if (name.isEmpty()) {
-        AppHelpers::showWarning(this, InventoryConstants::MSG_CATEGORY_NAME_EMPTY);
+        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_CATEGORY_NAME_EMPTY));
         return;
     }
     const QString description = descEdit->text().trimmed();
@@ -840,14 +882,14 @@ void InventoryWindow::addCategory()
     query.addBindValue(true);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to add category: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to add category: ") + query.lastError().text());
         return;
     }
 
     int categoryId = query.lastInsertId().toInt();
     loadCategories(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::CATEGORY_CHANGED, categoryId);
-    AppHelpers::showInfo(this, InventoryConstants::MSG_CATEGORY_ADD_SUCCESS);
+    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_CATEGORY_ADD_SUCCESS));
 }
 
 void InventoryWindow::editCategory(int row)
@@ -860,7 +902,7 @@ void InventoryWindow::editCategory(int row)
 
     // ── Single dialog: name + description, pre-filled ────────────────────────
     QDialog dlg(this);
-    dlg.setWindowTitle("Edit Category");
+    dlg.setWindowTitle(tr("Edit Category"));
     dlg.setFixedWidth(340);
     dlg.setModal(true);
 
@@ -873,19 +915,19 @@ void InventoryWindow::editCategory(int row)
 
     QLineEdit* nameEdit = new QLineEdit(currentName, &dlg);
     nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow("Name:", nameEdit);
+    form->addRow(tr("Name:"), nameEdit);
 
     QLineEdit* descEdit = new QLineEdit(currentDesc, &dlg);
-    descEdit->setPlaceholderText("Description (optional)");
+    descEdit->setPlaceholderText(tr("Description (optional)"));
     descEdit->setAlignment(Qt::AlignCenter);
-    form->addRow("Description:", descEdit);
+    form->addRow(tr("Description:"), descEdit);
 
     main->addLayout(form);
 
     QDialogButtonBox* btns = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText("Save");
-    btns->button(QDialogButtonBox::Cancel)->setText("Cancel");
+    btns->button(QDialogButtonBox::Ok)->setText(tr("Save"));
+    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
     connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     main->addWidget(btns);
@@ -897,7 +939,7 @@ void InventoryWindow::editCategory(int row)
 
     const QString name = nameEdit->text().trimmed();
     if (name.isEmpty()) {
-        AppHelpers::showWarning(this, InventoryConstants::MSG_CATEGORY_NAME_EMPTY);
+        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_CATEGORY_NAME_EMPTY));
         return;
     }
     const QString description = descEdit->text().trimmed();
@@ -914,13 +956,13 @@ void InventoryWindow::editCategory(int row)
     query.addBindValue(categoryId);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to update category: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to update category: ") + query.lastError().text());
         return;
     }
 
     loadCategories(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::CATEGORY_CHANGED, categoryId);
-    AppHelpers::showInfo(this, InventoryConstants::MSG_CATEGORY_EDIT_SUCCESS);
+    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_CATEGORY_EDIT_SUCCESS));
 }
 
 void InventoryWindow::deleteCategory(int row)
@@ -936,8 +978,8 @@ void InventoryWindow::deleteCategory(int row)
     int count = countQuery.value(0).toInt();
 
     QString message = count > 0
-                          ? QString("This category is assigned to %1 product(s). They will become uncategorized. Continue?").arg(count)
-                          : "Are you sure you want to delete this category?";
+                          ? tr("This category is assigned to %1 product(s). They will become uncategorized. Continue?").arg(count)
+                          : tr("Are you sure you want to delete this category?");
 
     if (!AppHelpers::confirmAction(this, message)) return;
 
@@ -946,13 +988,13 @@ void InventoryWindow::deleteCategory(int row)
     query.addBindValue(categoryId);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to delete category: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to delete category: ") + query.lastError().text());
         return;
     }
 
     loadCategories(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::CATEGORY_CHANGED, categoryId);
-    AppHelpers::showInfo(this, InventoryConstants::MSG_CATEGORY_DELETE_SUCCESS);
+    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_CATEGORY_DELETE_SUCCESS));
 }
 
 // ===== DISCOUNTS CRUD =====
@@ -961,13 +1003,13 @@ void InventoryWindow::addDiscount()
 {
     if (m_session && !AccessControl::canPerformAction(
             m_session->username(), AccessControl::ManageDiscounts, m_db->database())) {
-        AppHelpers::showWarning(this, "You do not have permission to manage discounts.");
+        AppHelpers::showWarning(this, tr("You do not have permission to manage discounts."));
         return;
     }
 
     // ── Single dialog: all discount fields ───────────────────────────────────
     QDialog dlg(this);
-    dlg.setWindowTitle("Add Discount");
+    dlg.setWindowTitle(tr("Add Discount"));
     dlg.setFixedWidth(360);
     dlg.setModal(true);
 
@@ -980,31 +1022,31 @@ void InventoryWindow::addDiscount()
 
     // Name
     QLineEdit* nameEdit = new QLineEdit(&dlg);
-    nameEdit->setPlaceholderText("Discount name");
+    nameEdit->setPlaceholderText(tr("Discount name"));
     nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow("Name:", nameEdit);
+    form->addRow(tr("Name:"), nameEdit);
 
     // Type
     QComboBox* typeCombo = new QComboBox(&dlg);
-    typeCombo->addItem("Percentage (%)", "percentage");
-    typeCombo->addItem("Fixed Amount",   "amount");
-    form->addRow("Type:", typeCombo);
+    typeCombo->addItem(tr("Percentage (%)"), "percentage");
+    typeCombo->addItem(tr("Fixed Amount"),   "amount");
+    form->addRow(tr("Type:"), typeCombo);
 
     // Value
     QDoubleSpinBox* valueSpin = new QDoubleSpinBox(&dlg);
     valueSpin->setMinimum(0.0);
     valueSpin->setMaximum(9999999.0);
-    valueSpin->setDecimals(3);
+    valueSpin->setDecimals(AppConstants::PRICE_DECIMALS);
     valueSpin->setValue(0.0);
-    form->addRow("Value:", valueSpin);
+    form->addRow(tr("Value:"), valueSpin);
 
     // Active
-    QCheckBox* activeCheck = new QCheckBox("Active", &dlg);
+    QCheckBox* activeCheck = new QCheckBox(tr("Active"), &dlg);
     activeCheck->setChecked(true);
-    form->addRow("Status:", activeCheck);
+    form->addRow(tr("Status:"), activeCheck);
 
     // Start date (optional)
-    QCheckBox* startCheck = new QCheckBox("Set start date", &dlg);
+    QCheckBox* startCheck = new QCheckBox(tr("Set start date"), &dlg);
     QDateEdit* startEdit  = new QDateEdit(QDate::currentDate(), &dlg);
     startEdit->setCalendarPopup(true);
     startEdit->setDisplayFormat("dd/MM/yyyy");
@@ -1013,7 +1055,7 @@ void InventoryWindow::addDiscount()
     form->addRow(startCheck, startEdit);
 
     // End date (optional)
-    QCheckBox* endCheck = new QCheckBox("Set end date", &dlg);
+    QCheckBox* endCheck = new QCheckBox(tr("Set end date"), &dlg);
     QDateEdit* endEdit  = new QDateEdit(QDate::currentDate(), &dlg);
     endEdit->setCalendarPopup(true);
     endEdit->setDisplayFormat("dd/MM/yyyy");
@@ -1025,8 +1067,8 @@ void InventoryWindow::addDiscount()
 
     QDialogButtonBox* btns = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText("Add");
-    btns->button(QDialogButtonBox::Cancel)->setText("Cancel");
+    btns->button(QDialogButtonBox::Ok)->setText(tr("Add"));
+    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
     connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     main->addWidget(btns);
@@ -1037,7 +1079,7 @@ void InventoryWindow::addDiscount()
 
     const QString name = nameEdit->text().trimmed();
     if (name.isEmpty()) {
-        AppHelpers::showWarning(this, InventoryConstants::MSG_DISCOUNT_NAME_EMPTY);
+        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_DISCOUNT_NAME_EMPTY));
         return;
     }
 
@@ -1061,21 +1103,21 @@ void InventoryWindow::addDiscount()
     query.addBindValue(endDate);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to add discount: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to add discount: ") + query.lastError().text());
         return;
     }
 
     int discountId = query.lastInsertId().toInt();
     loadDiscounts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::DISCOUNT_CHANGED, discountId);
-    AppHelpers::showInfo(this, InventoryConstants::MSG_DISCOUNT_ADD_SUCCESS);
+    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_DISCOUNT_ADD_SUCCESS));
 }
 
 void InventoryWindow::editDiscount(int row)
 {
     if (m_session && !AccessControl::canPerformAction(
             m_session->username(), AccessControl::ManageDiscounts, m_db->database())) {
-        AppHelpers::showWarning(this, "You do not have permission to manage discounts.");
+        AppHelpers::showWarning(this, tr("You do not have permission to manage discounts."));
         return;
     }
 
@@ -1099,7 +1141,7 @@ void InventoryWindow::editDiscount(int row)
 
     // ── Single dialog: all fields pre-filled ─────────────────────────────────
     QDialog dlg(this);
-    dlg.setWindowTitle("Edit Discount");
+    dlg.setWindowTitle(tr("Edit Discount"));
     dlg.setFixedWidth(360);
     dlg.setModal(true);
 
@@ -1113,30 +1155,30 @@ void InventoryWindow::editDiscount(int row)
     // Name
     QLineEdit* nameEdit = new QLineEdit(savedName, &dlg);
     nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow("Name:", nameEdit);
+    form->addRow(tr("Name:"), nameEdit);
 
     // Type
     QComboBox* typeCombo = new QComboBox(&dlg);
-    typeCombo->addItem("Percentage (%)", "percentage");
-    typeCombo->addItem("Fixed Amount",   "amount");
+    typeCombo->addItem(tr("Percentage (%)"), "percentage");
+    typeCombo->addItem(tr("Fixed Amount"),   "amount");
     typeCombo->setCurrentIndex(savedType == "percentage" ? 0 : 1);
-    form->addRow("Type:", typeCombo);
+    form->addRow(tr("Type:"), typeCombo);
 
     // Value
     QDoubleSpinBox* valueSpin = new QDoubleSpinBox(&dlg);
     valueSpin->setMinimum(0.0);
     valueSpin->setMaximum(9999999.0);
-    valueSpin->setDecimals(3);
+    valueSpin->setDecimals(AppConstants::PRICE_DECIMALS);
     valueSpin->setValue(savedValue);
-    form->addRow("Value:", valueSpin);
+    form->addRow(tr("Value:"), valueSpin);
 
     // Active
-    QCheckBox* activeCheck = new QCheckBox("Active", &dlg);
+    QCheckBox* activeCheck = new QCheckBox(tr("Active"), &dlg);
     activeCheck->setChecked(savedActive);
-    form->addRow("Status:", activeCheck);
+    form->addRow(tr("Status:"), activeCheck);
 
     // Start date (optional — pre-fill if saved)
-    QCheckBox* startCheck = new QCheckBox("Set start date", &dlg);
+    QCheckBox* startCheck = new QCheckBox(tr("Set start date"), &dlg);
     QDateEdit* startEdit  = new QDateEdit(&dlg);
     startEdit->setCalendarPopup(true);
     startEdit->setDisplayFormat("dd/MM/yyyy");
@@ -1153,7 +1195,7 @@ void InventoryWindow::editDiscount(int row)
     form->addRow(startCheck, startEdit);
 
     // End date (optional — pre-fill if saved)
-    QCheckBox* endCheck = new QCheckBox("Set end date", &dlg);
+    QCheckBox* endCheck = new QCheckBox(tr("Set end date"), &dlg);
     QDateEdit* endEdit  = new QDateEdit(&dlg);
     endEdit->setCalendarPopup(true);
     endEdit->setDisplayFormat("dd/MM/yyyy");
@@ -1173,8 +1215,8 @@ void InventoryWindow::editDiscount(int row)
 
     QDialogButtonBox* btns = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText("Save");
-    btns->button(QDialogButtonBox::Cancel)->setText("Cancel");
+    btns->button(QDialogButtonBox::Ok)->setText(tr("Save"));
+    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
     connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     main->addWidget(btns);
@@ -1186,7 +1228,7 @@ void InventoryWindow::editDiscount(int row)
 
     const QString name = nameEdit->text().trimmed();
     if (name.isEmpty()) {
-        AppHelpers::showWarning(this, InventoryConstants::MSG_DISCOUNT_NAME_EMPTY);
+        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_DISCOUNT_NAME_EMPTY));
         return;
     }
 
@@ -1211,40 +1253,40 @@ void InventoryWindow::editDiscount(int row)
     query.addBindValue(discountId);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to update discount: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to update discount: ") + query.lastError().text());
         return;
     }
 
     loadDiscounts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::DISCOUNT_CHANGED, discountId);
-    AppHelpers::showInfo(this, InventoryConstants::MSG_DISCOUNT_EDIT_SUCCESS);
+    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_DISCOUNT_EDIT_SUCCESS));
 }
 
 void InventoryWindow::deleteDiscount(int row)
 {
     if (m_session && !AccessControl::canPerformAction(
             m_session->username(), AccessControl::ManageDiscounts, m_db->database())) {
-        AppHelpers::showWarning(this, "You do not have permission to manage discounts.");
+        AppHelpers::showWarning(this, tr("You do not have permission to manage discounts."));
         return;
     }
 
     int discountId = getDiscountIdFromRow(row);
     if (discountId <= 0) return;
 
-    if (!AppHelpers::confirmAction(this, InventoryConstants::MSG_DISCOUNT_DELETE_CONFIRM)) return;
+    if (!AppHelpers::confirmAction(this, tr(InventoryConstants::MSG_DISCOUNT_DELETE_CONFIRM))) return;
 
     QSqlQuery query(m_db->database());
     query.prepare(Queries::DISCOUNT_DELETE);
     query.addBindValue(discountId);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to delete discount: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to delete discount: ") + query.lastError().text());
         return;
     }
 
     loadDiscounts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::DISCOUNT_CHANGED, discountId);
-    AppHelpers::showInfo(this, InventoryConstants::MSG_DISCOUNT_DELETE_SUCCESS);
+    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_DISCOUNT_DELETE_SUCCESS));
 }
 
 // ===== HELPERS =====

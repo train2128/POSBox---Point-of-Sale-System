@@ -10,12 +10,12 @@
 #include "RegisterLock.h"
 #include "TicketPrintManager.h"
 #include "ThermalPrinter.h"
-#include "CustomerInvoiceDialog.h"
 #include "CommonConfig.h"
 #include "PrinterConstants.h"
 #include "Prefixes.h"
 #include "AccessControl.h"
 #include "LogoutManager.h"
+#include "TranslationManager.h"
 #include <QStandardItemModel>
 #include <QSortFilterProxyModel>
 #include <QHeaderView>
@@ -63,10 +63,13 @@ TicketWindow::TicketWindow(UserSession* session,
     ui->setupUi(this);
     StyleManager::applyGlobalStyles(this, m_db->database());
     m_printManager = new TicketPrintManager(m_db, this);
-    setupUI();
     setupTable();
+    setupUI();
     loadTickets(QDate::currentDate());
     showMaximized();
+
+    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
+            this, &TicketWindow::retranslateUi);
 }
 
 TicketWindow::~TicketWindow()
@@ -76,28 +79,19 @@ TicketWindow::~TicketWindow()
 
 void TicketWindow::setupUI()
 {
-    setWindowTitle("Ticket History");
+    retranslateUi();
 
     // Logout button (icon set via StyleManager)
     ui->logoutBtn->setText("");
     ui->logoutBtn->setIcon(QIcon(StyleManager::iconPath("logout")));
     ui->logoutBtn->setIconSize(QSize(22, 22));
     ui->logoutBtn->setFixedSize(36, 36);
-    ui->logoutBtn->setToolTip("Logout");
 
     // Action buttons
-    ui->printTicketBtn->setText("Print");
-    ui->editTicketBtn->setText("Edit");
-    ui->refundTicketBtn->setText("Refund");
-    ui->deleteTicketBtn->setText("Delete");
-
     ui->printTicketBtn->setEnabled(false);
     ui->editTicketBtn->setEnabled(false);
     ui->refundTicketBtn->setEnabled(false);
     ui->deleteTicketBtn->setEnabled(false);
-
-    // Search bar
-    ui->searchBar->setPlaceholderText("Search by ticket #, seller, date, or status...");
 
     // Date filter — default to today
     ui->dateSelect->setDate(QDate::currentDate());
@@ -136,12 +130,28 @@ void TicketWindow::setupUI()
     ui->ticketCartItems->addStretch(1);
 }
 
+void TicketWindow::retranslateUi()
+{
+    setWindowTitle(tr("Ticket History"));
+
+    ui->logoutBtn->setToolTip(tr("Logout"));
+
+    ui->printTicketBtn->setText(tr("Print"));
+    ui->editTicketBtn->setText(tr("Edit"));
+    ui->refundTicketBtn->setText(tr("Refund"));
+    ui->deleteTicketBtn->setText(tr("Delete"));
+
+    ui->searchBar->setPlaceholderText(tr("Search by ticket #, seller, date, or status..."));
+
+    m_model->setHorizontalHeaderLabels({
+        tr("Ticket #"), tr("Date"), tr("Time"), tr("Seller"),
+        tr("Total"), tr("Discount"), tr("Status")
+    });
+}
+
 void TicketWindow::setupTable()
 {
     m_model = new QStandardItemModel(0, NUM_COLUMNS, this);
-    m_model->setHorizontalHeaderLabels({
-        "Ticket #", "Date", "Time", "Seller", "Total", "Discount", "Status"
-    });
 
     m_proxy = new QSortFilterProxyModel(this);
     m_proxy->setSourceModel(m_model);
@@ -343,11 +353,11 @@ void TicketWindow::onDeleteClicked()
 
     if (m_session && !AccessControl::canPerformAction(
             m_session->username(), AccessControl::DeleteTicket, m_db->database())) {
-        AppHelpers::showWarning(this, "You do not have permission to delete tickets.");
+        AppHelpers::showWarning(this, tr("You do not have permission to delete tickets."));
         return;
     }
 
-    if (!AppHelpers::confirmAction(this, "Are you sure you want to permanently delete this ticket?\nThis action cannot be undone."))
+    if (!AppHelpers::confirmAction(this, tr("Are you sure you want to permanently delete this ticket?\nThis action cannot be undone.")))
         return;
 
     QSqlQuery q(m_db->database());
@@ -360,7 +370,7 @@ void TicketWindow::onDeleteClicked()
     q.addBindValue(m_selectedTicketId);
     if (!q.exec()) {
         qWarning() << "Failed to delete ticket items:" << q.lastError().text();
-        AppHelpers::showError(this, "Failed to delete ticket items.");
+        AppHelpers::showError(this, tr("Failed to delete ticket items."));
         return;
     }
 
@@ -369,7 +379,7 @@ void TicketWindow::onDeleteClicked()
     q.addBindValue(m_selectedTicketId);
     if (!q.exec()) {
         qWarning() << "Failed to delete ticket:" << q.lastError().text();
-        AppHelpers::showError(this, "Failed to delete ticket.");
+        AppHelpers::showError(this, tr("Failed to delete ticket."));
         return;
     }
 
@@ -387,7 +397,7 @@ void TicketWindow::onRefundClicked()
 {
     if (m_selectedTicketId <= 0) return;
 
-    if (!AppHelpers::confirmAction(this, "Mark this ticket as refunded and restore stock?"))
+    if (!AppHelpers::confirmAction(this, tr("Mark this ticket as refunded and restore stock?")))
         return;
 
     // Update status to REFUNDED
@@ -398,7 +408,7 @@ void TicketWindow::onRefundClicked()
 
     if (!q.exec()) {
         qWarning() << "Failed to update ticket status:" << q.lastError().text();
-        AppHelpers::showError(this, "Failed to mark ticket as refunded.");
+        AppHelpers::showError(this, tr("Failed to mark ticket as refunded."));
         return;
     }
 
@@ -463,7 +473,7 @@ void TicketWindow::onEditClicked()
 
     // Write the edit request JSON file
     if (!TicketEditRequest::write(m_selectedTicketId, m_session->username())) {
-        AppHelpers::showError(this, "Failed to create edit request file.");
+        AppHelpers::showError(this, tr("Failed to create edit request file."));
         return;
     }
 
@@ -479,7 +489,7 @@ void TicketWindow::onEditClicked()
         args << "--user" << m_session->username();
 
         if (!QProcess::startDetached(executable, args)) {
-            AppHelpers::showError(this, "Failed to launch Register application.");
+            AppHelpers::showError(this, tr("Failed to launch Register application."));
             TicketEditRequest::clear();
         }
     }
@@ -503,30 +513,26 @@ void TicketWindow::onPrintClicked()
 
     // ── Printer disabled → straight to invoice, no choice dialog ─────────────
     if (!printerEnabled) {
-        CustomerInvoiceDialog custDlg(this);
-        if (custDlg.exec() != QDialog::Accepted) return;
-
-        CustomerInvoiceData customerData = custDlg.getCustomerData();
-        m_printManager->printTicketWithPreview(m_selectedTicketId, customerData);
+        m_printManager->printTicketWithPreview(m_selectedTicketId);
         return;
     }
 
     // ── Printer enabled → show choice dialog ─────────────────────────────────
     QDialog choiceDialog(this);
-    choiceDialog.setWindowTitle("Print");
+    choiceDialog.setWindowTitle(tr("Print"));
     choiceDialog.setFixedSize(280, 120);
 
     QVBoxLayout* layout = new QVBoxLayout(&choiceDialog);
     layout->setSpacing(10);
     layout->setContentsMargins(20, 20, 20, 20);
 
-    QLabel* label = new QLabel("Choose print format:", &choiceDialog);
+    QLabel* label = new QLabel(tr("Choose print format:"), &choiceDialog);
     label->setAlignment(Qt::AlignCenter);
     layout->addWidget(label);
 
     QHBoxLayout* btnLayout = new QHBoxLayout();
-    QPushButton* invoiceBtn = new QPushButton("Invoice", &choiceDialog);
-    QPushButton* ticketBtn  = new QPushButton("Ticket",  &choiceDialog);
+    QPushButton* invoiceBtn = new QPushButton(tr("Invoice"), &choiceDialog);
+    QPushButton* ticketBtn  = new QPushButton(tr("Ticket"),  &choiceDialog);
     btnLayout->addWidget(invoiceBtn);
     btnLayout->addWidget(ticketBtn);
     layout->addLayout(btnLayout);
@@ -541,11 +547,7 @@ void TicketWindow::onPrintClicked()
 
     // ── Invoice ───────────────────────────────────────────────────────────────
     if (invoiceChosen) {
-        CustomerInvoiceDialog custDlg(this);
-        if (custDlg.exec() != QDialog::Accepted) return;
-
-        CustomerInvoiceData customerData = custDlg.getCustomerData();
-        m_printManager->printTicketWithPreview(m_selectedTicketId, customerData);
+        m_printManager->printTicketWithPreview(m_selectedTicketId);
         return;
     }
 

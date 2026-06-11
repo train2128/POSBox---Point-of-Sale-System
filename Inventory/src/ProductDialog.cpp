@@ -13,6 +13,7 @@
 #include <QFile>
 #include <QDir>
 #include <QIntValidator>
+#include <QRegularExpression>
 #include <QHBoxLayout>
 #include <QDebug>
 
@@ -56,18 +57,18 @@ ProductDialog::~ProductDialog()
 
 void ProductDialog::setupUI()
 {
-    setWindowTitle(m_editMode ? "Edit Product" : "Add Product");
+    setWindowTitle(m_editMode ? tr("Edit Product") : tr("Add Product"));
     setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
 
     // Label texts
-    ui->nameLabel->setText("Name");
-    ui->costLabel->setText("Cost");
-    ui->priceLabel->setText("Price");
-    ui->categoryLabel->setText("Category");
-    ui->stockLabel->setText("Stock");
-    ui->hasVariantsCheck->setText("Has Variants");
-    ui->isServiceCheck->setText("Is Service");
-    ui->variantsAddBtn->setText("Manage Variants");
+    ui->nameLabel->setText(tr("Name"));
+    ui->costLabel->setText(tr("Cost"));
+    ui->priceLabel->setText(tr("Price"));
+    ui->categoryLabel->setText(tr("Category"));
+    ui->stockLabel->setText(tr("Stock"));
+    ui->hasVariantsCheck->setText(tr("Has Variants"));
+    ui->isServiceCheck->setText(tr("Is Service"));
+    ui->variantsAddBtn->setText(tr("Manage Variants"));
 
     // Add left/right margins to labels so they don't hug the edge
     ui->nameLabel->setContentsMargins(8, 0, 8, 0);
@@ -83,9 +84,9 @@ void ProductDialog::setupUI()
     ui->quantityEdit->setAlignment(Qt::AlignCenter);
 
     // Placeholders
-    ui->productName->setPlaceholderText("Product name");
-    ui->costEdit->setPlaceholderText("0.000 TND");
-    ui->priceEdit->setPlaceholderText("0.000 TND");
+    ui->productName->setPlaceholderText(tr("Product name"));
+    ui->costEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
+    ui->priceEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
     ui->quantityEdit->setPlaceholderText("0");
 
     // Stock: numbers only
@@ -106,8 +107,8 @@ void ProductDialog::setupUI()
     ui->variantsAddBtn->setEnabled(false);
 
     // Button box labels
-    ui->CCBtns->button(QDialogButtonBox::Ok)->setText("Save");
-    ui->CCBtns->button(QDialogButtonBox::Cancel)->setText("Cancel");
+    ui->CCBtns->button(QDialogButtonBox::Ok)->setText(tr("Save"));
+    ui->CCBtns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
 }
 
 void ProductDialog::setupConnections()
@@ -147,7 +148,7 @@ void ProductDialog::loadCategories()
     if (!m_db) return;
 
     ui->categorySelect->clear();
-    ui->categorySelect->addItem("-- No Category --", QVariant(-1));
+    ui->categorySelect->addItem(tr("-- No Category --"), QVariant(-1));
 
     QSqlQuery query(m_db->database());
     query.prepare(Queries::CATEGORY_SELECT_ALL);
@@ -176,11 +177,11 @@ void ProductDialog::populateForEdit()
 
     ui->productName->setText(query.value("name").toString());
 
-    // Cost and price with "TND" formatting
+    // Cost and price with currency formatting
     double cost  = query.value("cost").toDouble();
     double price = query.value("price").toDouble();
-    ui->costEdit->setText(QString("%1 TND").arg(cost, 0, 'f', 3));
-    ui->priceEdit->setText(QString("%1 TND").arg(price, 0, 'f', 3));
+    ui->costEdit->setText(AppHelpers::formatPrice(cost));
+    ui->priceEdit->setText(AppHelpers::formatPrice(price));
 
     ui->quantityEdit->setText(QString::number(query.value("stock_quantity").toInt()));
     ui->hasVariantsCheck->setChecked(query.value("has_variants").toBool());
@@ -207,8 +208,8 @@ void ProductDialog::populateForEdit()
 void ProductDialog::onImageClicked()
 {
     QString filePath = QFileDialog::getOpenFileName(
-        this, "Select Product Image", QString(),
-        "Images (*.png *.jpg *.jpeg *.bmp *.gif)");
+        this, tr("Select Product Image"), QString(),
+        tr("Images (*.png *.jpg *.jpeg *.bmp *.gif)"));
 
     if (filePath.isEmpty()) return;
 
@@ -221,23 +222,23 @@ void ProductDialog::onImageClicked()
 
 void ProductDialog::onCostEditingFinished()
 {
-    QString raw = stripTND(ui->costEdit->text()).trimmed();
+    QString raw = stripCurrency(ui->costEdit->text()).trimmed();
     if (raw.isEmpty()) return;
     bool ok = false;
     double val = raw.toDouble(&ok);
     if (ok) {
-        ui->costEdit->setText(QString("%1 TND").arg(val, 0, 'f', 3));
+        ui->costEdit->setText(AppHelpers::formatPrice(val));
     }
 }
 
 void ProductDialog::onPriceEditingFinished()
 {
-    QString raw = stripTND(ui->priceEdit->text()).trimmed();
+    QString raw = stripCurrency(ui->priceEdit->text()).trimmed();
     if (raw.isEmpty()) return;
     bool ok = false;
     double val = raw.toDouble(&ok);
     if (ok) {
-        ui->priceEdit->setText(QString("%1 TND").arg(val, 0, 'f', 3));
+        ui->priceEdit->setText(AppHelpers::formatPrice(val));
     }
 }
 
@@ -288,11 +289,13 @@ void ProductDialog::onRejected()
 
 // ===== HELPERS =====
 
-QString ProductDialog::stripTND(const QString& text) const
+QString ProductDialog::stripCurrency(const QString& text) const
 {
-    QString result = text;
-    result.remove(" TND", Qt::CaseInsensitive);
-    return result.trimmed();
+    QString result = text.trimmed();
+    // Remove trailing currency code (e.g. " TND", " USD", etc.)
+    static QRegularExpression rx("\\s+\\S+$");
+    result.remove(rx);
+    return result;
 }
 
 // ===== VALIDATION & SAVE =====
@@ -300,7 +303,7 @@ QString ProductDialog::stripTND(const QString& text) const
 bool ProductDialog::validateAndSave()
 {
     if (ui->productName->text().trimmed().isEmpty()) {
-        AppHelpers::showWarning(this, InventoryConstants::MSG_PRODUCT_NAME_EMPTY);
+        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_PRODUCT_NAME_EMPTY));
         return false;
     }
 
@@ -309,15 +312,15 @@ bool ProductDialog::validateAndSave()
 
     if (!hasVariants) {
         bool ok = false;
-        stripTND(ui->costEdit->text()).toDouble(&ok);
+        stripCurrency(ui->costEdit->text()).toDouble(&ok);
         if (!ok) {
-            AppHelpers::showWarning(this, InventoryConstants::MSG_PRODUCT_COST_INVALID);
+            AppHelpers::showWarning(this, tr(InventoryConstants::MSG_PRODUCT_COST_INVALID));
             return false;
         }
 
-        stripTND(ui->priceEdit->text()).toDouble(&ok);
+        stripCurrency(ui->priceEdit->text()).toDouble(&ok);
         if (!ok) {
-            AppHelpers::showWarning(this, InventoryConstants::MSG_PRODUCT_PRICE_INVALID);
+            AppHelpers::showWarning(this, tr(InventoryConstants::MSG_PRODUCT_PRICE_INVALID));
             return false;
         }
     }
@@ -326,7 +329,7 @@ bool ProductDialog::validateAndSave()
         bool ok = false;
         ui->quantityEdit->text().toInt(&ok);
         if (!ok) {
-            AppHelpers::showWarning(this, InventoryConstants::MSG_PRODUCT_STOCK_INVALID);
+            AppHelpers::showWarning(this, tr(InventoryConstants::MSG_PRODUCT_STOCK_INVALID));
             return false;
         }
     }
@@ -339,8 +342,8 @@ bool ProductDialog::saveProduct()
     bool isService   = ui->isServiceCheck->isChecked();
     bool hasVariants = ui->hasVariantsCheck->isChecked();
 
-    double cost  = hasVariants ? 0.0 : stripTND(ui->costEdit->text()).toDouble();
-    double price = hasVariants ? 0.0 : stripTND(ui->priceEdit->text()).toDouble();
+    double cost  = hasVariants ? 0.0 : stripCurrency(ui->costEdit->text()).toDouble();
+    double price = hasVariants ? 0.0 : stripCurrency(ui->priceEdit->text()).toDouble();
     int stock    = isService   ? 0   : ui->quantityEdit->text().toInt();
     int categoryId = ui->categorySelect->currentData().toInt();
 
@@ -372,7 +375,7 @@ bool ProductDialog::saveProduct()
     query.addBindValue(savedImagePath.isEmpty() ? QVariant() : QVariant(savedImagePath));
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to save product: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to save product: ") + query.lastError().text());
         return false;
     }
 
@@ -393,7 +396,7 @@ bool ProductDialog::saveProduct()
             vq.addBindValue(QVariant()); // sku
 
             if (!vq.exec()) {
-                AppHelpers::showError(this, "Failed to save variant: " + vq.lastError().text());
+                    AppHelpers::showError(this, tr("Failed to save variant: ") + vq.lastError().text());
                 return false;
             }
         }
@@ -408,8 +411,8 @@ bool ProductDialog::updateProduct()
     bool isService   = ui->isServiceCheck->isChecked();
     bool hasVariants = ui->hasVariantsCheck->isChecked();
 
-    double cost  = hasVariants ? 0.0 : stripTND(ui->costEdit->text()).toDouble();
-    double price = hasVariants ? 0.0 : stripTND(ui->priceEdit->text()).toDouble();
+    double cost  = hasVariants ? 0.0 : stripCurrency(ui->costEdit->text()).toDouble();
+    double price = hasVariants ? 0.0 : stripCurrency(ui->priceEdit->text()).toDouble();
     int stock    = isService   ? 0   : ui->quantityEdit->text().toInt();
     int categoryId = ui->categorySelect->currentData().toInt();
 
@@ -442,7 +445,7 @@ bool ProductDialog::updateProduct()
     query.addBindValue(m_productId);
 
     if (!query.exec()) {
-        AppHelpers::showError(this, "Failed to update product: " + query.lastError().text());
+        AppHelpers::showError(this, tr("Failed to update product: ") + query.lastError().text());
         return false;
     }
 
@@ -488,7 +491,7 @@ bool ProductDialog::updateProduct()
                 vq.addBindValue(pv.variantId);
 
                 if (!vq.exec()) {
-                    AppHelpers::showError(this, "Failed to update variant: " + vq.lastError().text());
+                    AppHelpers::showError(this, tr("Failed to update variant: ") + vq.lastError().text());
                     return false;
                 }
             } else {
@@ -504,7 +507,7 @@ bool ProductDialog::updateProduct()
                 vq.addBindValue(QVariant()); // sku
 
                 if (!vq.exec()) {
-                    AppHelpers::showError(this, "Failed to save variant: " + vq.lastError().text());
+                AppHelpers::showError(this, tr("Failed to save variant: ") + vq.lastError().text());
                     return false;
                 }
             }

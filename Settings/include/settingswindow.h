@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QEvent>
 #include <QModelIndex>
+#include "CountryData.h"
 
 class UserSession;
 class DatabaseManager;
@@ -39,7 +40,6 @@ private slots:
     void onPhoneChanged(const QString& text);
     void onPostalChanged(const QString& text);
     void onEmailChanged(const QString& text);
-    void onTaxIdChanged(const QString& text);
 
     // Users
     void onUserAddClicked();
@@ -65,6 +65,7 @@ signals:
 private:
     // Setup
     void setupUI();
+    void retranslateUi();
     void setupValidators();
     void setupConnections();
     void updateUserDisplay();
@@ -91,6 +92,18 @@ private:
     // App Settings
     void loadAppSettings();
     void saveAppSettings();
+    void loadCountryCurrency();
+    void saveCountryCurrency();
+    void populateCountryCurrencyCombos();
+    void onCountryChanged(int index);
+    void onCurrencyChanged(int index);
+    void updateRegionalFields();
+
+    // Language
+    void loadLanguage();
+    void saveLanguage();
+    void populateLanguageCombo();
+    void onLanguageChanged(int index);
 
     // Database
     void loadSyncPath();
@@ -118,6 +131,7 @@ private:
 
     QString m_newLogoSourcePath;
     QString m_existingLogoFilename;
+    CountryInfo m_currentCountry;
 
     QStandardItemModel* m_usersModel;
 };

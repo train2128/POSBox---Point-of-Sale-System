@@ -16,7 +16,7 @@ SaveTicketDialog::SaveTicketDialog(QWidget* parent)
     , m_advanceSpin(nullptr)
     , m_descField(nullptr)
 {
-    setWindowTitle("Save Open Ticket");
+    setWindowTitle(tr("Save Open Ticket"));
     setModal(true);
     setMinimumWidth(340);
     setupUI();
@@ -29,7 +29,7 @@ void SaveTicketDialog::setupUI()
     main->setSpacing(12);
 
     // Title
-    QLabel* title = new QLabel("Ticket Details", this);
+    QLabel* title = new QLabel(tr("Ticket Details"), this);
     title->setAlignment(Qt::AlignCenter);
     main->addWidget(title);
 
@@ -38,29 +38,29 @@ void SaveTicketDialog::setupUI()
     form->setSpacing(8);
 
     m_nameField = new QLineEdit(this);
-    m_nameField->setPlaceholderText("Customer name (optional)");
-    form->addRow("Customer Name:", m_nameField);
+    m_nameField->setPlaceholderText(tr("Customer name (optional)"));
+    form->addRow(tr("Customer Name:"), m_nameField);
 
     m_advanceSpin = new QDoubleSpinBox(this);
     m_advanceSpin->setMinimum(0.0);
     m_advanceSpin->setMaximum(999999.0);
-    m_advanceSpin->setDecimals(3);
+    m_advanceSpin->setDecimals(AppConstants::PRICE_DECIMALS);
     m_advanceSpin->setSuffix(QString(" %1").arg(AppConstants::CURRENCY));
     m_advanceSpin->setValue(0.0);
-    form->addRow("Advance Payment:", m_advanceSpin);
+    form->addRow(tr("Advance Payment:"), m_advanceSpin);
 
     m_descField = new QTextEdit(this);
-    m_descField->setPlaceholderText("Notes or description (optional)");
+    m_descField->setPlaceholderText(tr("Notes or description (optional)"));
     m_descField->setFixedHeight(72);
-    form->addRow("Description:", m_descField);
+    form->addRow(tr("Description:"), m_descField);
 
     main->addLayout(form);
 
     // Buttons
     QDialogButtonBox* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    buttons->button(QDialogButtonBox::Ok)->setText("Save Ticket");
-    buttons->button(QDialogButtonBox::Cancel)->setText("Cancel");
+    buttons->button(QDialogButtonBox::Ok)->setText(tr("Save Ticket"));
+    buttons->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
 
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);

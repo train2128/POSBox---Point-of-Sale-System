@@ -41,7 +41,7 @@ UserDialog::UserDialog(DatabaseManager* db, Mode mode,
 
 void UserDialog::setupUI()
 {
-    setWindowTitle(m_mode == Mode::Add ? "Add User" : "Edit User");
+    setWindowTitle(m_mode == Mode::Add ? tr("Add User") : tr("Edit User"));
     setMinimumWidth(380);
     setModal(true);
 
@@ -51,7 +51,7 @@ void UserDialog::setupUI()
 
     // Title label
     QLabel* titleLabel = new QLabel(
-        m_mode == Mode::Add ? "Add New User" : "Edit User", this);
+        m_mode == Mode::Add ? tr("Add New User") : tr("Edit User"), this);
     titleLabel->setStyleSheet(
         "font-size: 15px; font-weight: bold; color: #ffffff; margin-bottom: 4px;");
     titleLabel->setAlignment(Qt::AlignCenter);
@@ -70,7 +70,7 @@ void UserDialog::setupUI()
 
     // Username
     m_usernameField = new QLineEdit(this);
-    m_usernameField->setPlaceholderText("Username");
+    m_usernameField->setPlaceholderText(tr("Username"));
     m_usernameField->setAlignment(Qt::AlignCenter);
     if (m_mode == Mode::Edit) {
         m_usernameField->setText(m_username);
@@ -85,41 +85,41 @@ void UserDialog::setupUI()
             "  font-size: 13px;"
             "}");
     }
-    form->addRow(makeLabel("Username"), m_usernameField);
+    form->addRow(makeLabel(tr("Username")), m_usernameField);
 
     // Display name
     m_displayNameField = new QLineEdit(this);
-    m_displayNameField->setPlaceholderText("Display name");
+    m_displayNameField->setPlaceholderText(tr("Display name"));
     m_displayNameField->setAlignment(Qt::AlignCenter);
-    form->addRow(makeLabel("Display Name"), m_displayNameField);
+    form->addRow(makeLabel(tr("Display Name")), m_displayNameField);
 
     // Role
     m_roleCombo = new QComboBox(this);
-    m_roleCombo->addItems({"Admin", "Manager", "Cashier"});
-    form->addRow(makeLabel("Role"), m_roleCombo);
+    m_roleCombo->addItems({tr("Admin"), tr("Manager"), tr("Cashier")});
+    form->addRow(makeLabel(tr("Role")), m_roleCombo);
 
     // Password
     m_passwordField = new QLineEdit(this);
     m_passwordField->setEchoMode(QLineEdit::Password);
     m_passwordField->setAlignment(Qt::AlignCenter);
     if (m_mode == Mode::Edit) {
-        m_passwordField->setPlaceholderText("Leave empty to keep current password");
+        m_passwordField->setPlaceholderText(tr("Leave empty to keep current password"));
     } else {
-        m_passwordField->setPlaceholderText("Password");
+        m_passwordField->setPlaceholderText(tr("Password"));
     }
-    form->addRow(makeLabel("Password"), m_passwordField);
+    form->addRow(makeLabel(tr("Password")), m_passwordField);
 
     // Confirm password
     m_confirmPasswordField = new QLineEdit(this);
     m_confirmPasswordField->setEchoMode(QLineEdit::Password);
     m_confirmPasswordField->setAlignment(Qt::AlignCenter);
-    m_confirmPasswordField->setPlaceholderText("Confirm password");
-    form->addRow(makeLabel("Confirm"), m_confirmPasswordField);
+    m_confirmPasswordField->setPlaceholderText(tr("Confirm password"));
+    form->addRow(makeLabel(tr("Confirm")), m_confirmPasswordField);
 
     mainLayout->addLayout(form);
 
     // Show password checkbox
-    m_showPasswordCheck = new QCheckBox("Show password", this);
+    m_showPasswordCheck = new QCheckBox(tr("Show password"), this);
     m_showPasswordCheck->setStyleSheet(
         "QCheckBox { color: #aaaaaa; font-size: 12px; }");
     mainLayout->addWidget(m_showPasswordCheck);
@@ -128,9 +128,9 @@ void UserDialog::setupUI()
     QHBoxLayout* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(10);
 
-    QPushButton* cancelBtn = new QPushButton("Cancel", this);
+    QPushButton* cancelBtn = new QPushButton(tr("Cancel"), this);
     QPushButton* saveBtn   = new QPushButton(
-        m_mode == Mode::Add ? "Add" : "Save", this);
+        m_mode == Mode::Add ? tr("Add") : tr("Save"), this);
 
     saveBtn->setProperty("btnStyle", "add");
     saveBtn->setMinimumHeight(36);
@@ -181,13 +181,13 @@ void UserDialog::loadUser()
 bool UserDialog::validate()
 {
     if (m_usernameField->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, "Validation Error", "Username cannot be empty.");
+        QMessageBox::warning(this, tr("Validation Error"), tr("Username cannot be empty."));
         m_usernameField->setFocus();
         return false;
     }
 
     if (m_displayNameField->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, "Validation Error", "Display name cannot be empty.");
+        QMessageBox::warning(this, tr("Validation Error"), tr("Display name cannot be empty."));
         m_displayNameField->setFocus();
         return false;
     }
@@ -197,13 +197,13 @@ bool UserDialog::validate()
 
     // In add mode password is required; in edit mode it's optional
     if (m_mode == Mode::Add && password.isEmpty()) {
-        QMessageBox::warning(this, "Validation Error", "Password cannot be empty.");
+        QMessageBox::warning(this, tr("Validation Error"), tr("Password cannot be empty."));
         m_passwordField->setFocus();
         return false;
     }
 
     if (!password.isEmpty() && password != confirm) {
-        QMessageBox::warning(this, "Validation Error", "Passwords do not match.");
+        QMessageBox::warning(this, tr("Validation Error"), tr("Passwords do not match."));
         m_confirmPasswordField->clear();
         m_confirmPasswordField->setFocus();
         return false;
@@ -235,7 +235,7 @@ bool UserDialog::saveUser()
 
         if (!query.exec()) {
             qWarning() << "UserDialog: insert failed:" << query.lastError().text();
-            QMessageBox::warning(this, "Error", SettingsConstants::MSG_USER_ADD_SUCCESS);
+            QMessageBox::warning(this, tr("Error"), tr(SettingsConstants::MSG_USER_ADD_SUCCESS));
             return false;
         }
 
@@ -265,7 +265,7 @@ bool UserDialog::saveUser()
 
         if (!query.exec()) {
             qWarning() << "UserDialog: update failed:" << query.lastError().text();
-            QMessageBox::warning(this, "Error", SettingsConstants::MSG_USER_EDIT_SUCCESS);
+            QMessageBox::warning(this, tr("Error"), tr(SettingsConstants::MSG_USER_EDIT_SUCCESS));
             return false;
         }
 

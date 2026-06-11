@@ -1,6 +1,7 @@
 #include "ThermalPrinter.h"
 #include "CommonConfig.h"
 #include "PrinterConstants.h"
+#include "Prefixes.h"
 
 #include <QSqlQuery>
 #include <QSqlRecord>
@@ -320,7 +321,7 @@ QByteArray ThermalPrinter::formatItemRow(const TicketItem &item, int paperWidth,
     // Layout: "Item Name          x2     10.00"
     // Name takes the left portion, qty in the middle, price right-aligned
     const QString qtyStr   = QString("x%1").arg(item.quantity);
-    const QString priceStr = QString::number(item.quantity * item.unitPrice, 'f', 2);
+    const QString priceStr = QString::number(item.quantity * item.unitPrice, 'f', AppConstants::PRICE_DECIMALS);
 
     // Fixed column widths
     const int priceCol = 8;
@@ -341,7 +342,7 @@ QByteArray ThermalPrinter::formatItemRow(const TicketItem &item, int paperWidth,
 QByteArray ThermalPrinter::formatTotalRow(const QString &label, double amount, int paperWidth, const QString &encoding) const
 {
     // Layout: "Label                   00.00"
-    const QString amountStr = QString::number(amount, 'f', 2);
+    const QString amountStr = QString::number(amount, 'f', AppConstants::PRICE_DECIMALS);
     const int amountCol     = 10;
     const int labelCol      = paperWidth - amountCol;
 

@@ -53,6 +53,7 @@ public:
     ~RegisterWindow();
 
     void checkPendingEditRequest();
+    void retranslateUi();
 
 private slots:
     // Top bar actions

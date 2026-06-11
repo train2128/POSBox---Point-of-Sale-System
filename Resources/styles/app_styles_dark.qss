@@ -395,7 +395,7 @@ QScrollBar::sub-line:horizontal {
    CHECKBOXES
    ============================================ */
 QCheckBox {
-    color: transparent;
+    color: #ecf0f1;
     spacing: 8px;
     font-size: 13px;
 }

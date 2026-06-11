@@ -23,6 +23,8 @@ public:
                              QWidget* parent = nullptr);
     ~FinancialWindow();
 
+    void retranslateUi();
+
 private slots:
     void onNotificationClicked();
     void onLogoutClicked();

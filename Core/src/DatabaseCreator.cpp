@@ -161,6 +161,9 @@ bool DatabaseCreator::migrateToV1_3(QSqlDatabase& db)
     }
 
     addColumnIfNotExists(db, "app_settings", "last_backup", "TEXT");
+    addColumnIfNotExists(db, "app_settings", "country", "TEXT DEFAULT 'TN'");
+    addColumnIfNotExists(db, "app_settings", "currency", "TEXT DEFAULT 'TND'");
+    addColumnIfNotExists(db, "app_settings", "language", "TEXT DEFAULT 'en'");
 
     if (!createPrinterSettingsTable(db)) {
         qCritical() << "Failed to create printer_settings table:" << m_lastError;
@@ -479,7 +482,10 @@ bool DatabaseCreator::createAppSettingsTable(QSqlDatabase& db)
             background TEXT DEFAULT 'default',
             show_oos_products INTEGER DEFAULT 1,
             sync_path TEXT,
-            last_backup TEXT
+            last_backup TEXT,
+            country TEXT DEFAULT 'TN',
+            currency TEXT DEFAULT 'TND',
+            language TEXT DEFAULT 'en'
         )
     )";
     return executeQuery(db, sql);
