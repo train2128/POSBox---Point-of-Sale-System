@@ -12,13 +12,6 @@
 const QList<TranslationManager::LanguageInfo> TranslationManager::LANGUAGES = {
     {"en", "English"},
     {"fr", "Francais"},
-    {"ar", "العربية"},
-    {"es", "Espanol"},
-    {"de", "Deutsch"},
-    {"tr", "Turkce"},
-    {"pt", "Portugues"},
-    {"zh", "中文"},
-    {"ru", "Русский"},
 };
 
 TranslationManager& TranslationManager::instance()

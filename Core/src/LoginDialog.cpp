@@ -4,6 +4,9 @@
 #include "DatabaseManager.h"
 #include "QueryRepository.h"
 #include <QMessageBox>
+#include <QDesktopServices>
+#include <QProcess>
+#include <QUrl>
 #include <QDebug>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -32,6 +35,16 @@ LoginDialog::LoginDialog(IAuthenticationProvider* authProvider, QWidget* parent)
     // Connections
     connect(ui->LoginButton, &QPushButton::clicked, this, &LoginDialog::onLoginClicked);
     connect(ui->PassEdit, &QLineEdit::returnPressed, this, &LoginDialog::onLoginClicked);
+    connect(ui->buyCoffeeBtn, &QPushButton::clicked, []() {
+        const QUrl url("https://buymeacoffee.com/cheriff");
+#ifdef Q_OS_LINUX
+        if (QProcess::startDetached("xdg-open", {url.toString()}))
+            return;
+        if (QProcess::startDetached("kde-open", {url.toString()}))
+            return;
+#endif
+        QDesktopServices::openUrl(url);
+    });
 }
 
 LoginDialog::LoginDialog(IAuthenticationProvider* authProvider, DatabaseManager* db, QWidget* parent)
@@ -55,6 +68,16 @@ LoginDialog::LoginDialog(IAuthenticationProvider* authProvider, DatabaseManager*
 
     connect(ui->LoginButton, &QPushButton::clicked, this, &LoginDialog::onLoginClicked);
     connect(ui->PassEdit, &QLineEdit::returnPressed, this, &LoginDialog::onLoginClicked);
+    connect(ui->buyCoffeeBtn, &QPushButton::clicked, []() {
+        const QUrl url("https://buymeacoffee.com/cheriff");
+#ifdef Q_OS_LINUX
+        if (QProcess::startDetached("xdg-open", {url.toString()}))
+            return;
+        if (QProcess::startDetached("kde-open", {url.toString()}))
+            return;
+#endif
+        QDesktopServices::openUrl(url);
+    });
 }
 
 LoginDialog::~LoginDialog()

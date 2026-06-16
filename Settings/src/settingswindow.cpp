@@ -1354,6 +1354,7 @@ void SettingsWindow::updateRegionalFields()
 
 void SettingsWindow::populateLanguageCombo()
 {
+    QSignalBlocker block(ui->languageSelect);
     ui->languageSelect->clear();
     const auto& languages = TranslationManager::instance().availableLanguages();
     for (const auto& lang : languages) {
