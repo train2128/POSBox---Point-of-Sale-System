@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=POSBox
+Exec=/opt/POSBox/bin/Register
+Icon=register_icon_colored.png
+Terminal=false
+Categories=Office;Finance;

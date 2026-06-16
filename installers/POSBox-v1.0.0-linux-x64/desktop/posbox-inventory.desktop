@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=POSBox Inventory
+Exec=/opt/POSBox/bin/Inventory
+Icon=inventory_icon_colored.png
+Terminal=false
+Categories=Office;Finance;

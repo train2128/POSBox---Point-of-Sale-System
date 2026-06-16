@@ -483,7 +483,7 @@ void TicketWindow::onEditClicked()
             m_notifier->notifyChange(ChangeType::TICKET_EDIT_REQUESTED, m_selectedTicketId);
     } else {
         // Register is not running — launch it, it will check the JSON file on startup
-        QString executable = QCoreApplication::applicationDirPath() + "/../Register/Register";
+        QString executable = QCoreApplication::applicationDirPath() + "/Register";
 
         QStringList args;
         args << "--user" << m_session->username();

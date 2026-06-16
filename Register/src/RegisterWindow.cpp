@@ -863,7 +863,7 @@ void RegisterWindow::onTicketsClicked()
     }
 
     // Tickets not running — launch it
-    QString executable = QCoreApplication::applicationDirPath() + "/../Tickets/Tickets";
+    QString executable = QCoreApplication::applicationDirPath() + "/Tickets";
 
     QStringList args;
     args << "--user" << m_session->username();

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Resources/Icons/images/icons/settings_icon_colored.png" alt="POSBox Logo" width="80">
+  <img src="Screenshots/logo.png" alt="POSBox Logo" width="80">
 </p>
 
 <h1 align="center">POSBox</h1>
@@ -189,20 +189,9 @@ LD_LIBRARY_PATH=./lib ./Register/Register
 
 ---
 
-## Support the Project
+## Donate
 
-POSBox is free and open-source. If it helps your business or you just think it's a cool project, consider supporting its development:
-
-<p align="center">
-  <a href="https://buymeacoffee.com/cheriff">
-    <img src="https://img.shields.io/badge/☕-Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee">
-  </a>
-</p>
-
-<p align="center">
-  <i>Every coffee fuels late-night coding sessions, bug fixes, and new features.<br>
-  Your support means the world and keeps this project alive.</i>
-</p>
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/cheriff)
 
 ---
 
