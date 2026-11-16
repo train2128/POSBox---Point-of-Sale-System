@@ -1,7 +1,7 @@
 #ifndef INVENTORYUIMAP_H
 #define INVENTORYUIMAP_H
 
-class QComboBox;
+class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTableWidget;
@@ -23,13 +23,30 @@ public:
      */
     static void initialize(Ui::MainWindow* ui);
 
-    // Top bar elements
-    static QComboBox*    tableSelect;
+    // Header
+    static QLabel*   headerTitle;
+    static QLabel*   headerSubtitle;
+
+    // KPI strip
+    static QPushButton* productsCountLabel;
+    static QPushButton* outOfStockLabel;
+    static QPushButton* lowStockLabel;
+
+    // Tab buttons (replaces the old QComboBox tableSelect)
+    static QPushButton*  productsTab;
+    static QPushButton*  categoriesTab;
+    static QPushButton*  discountsTab;
+
+    // Search + actions
     static QLineEdit*    searchBox;
     static QPushButton*  addBtn;
     static QPushButton*  editBtn;
     static QPushButton*  deleteBtn;
+    static QPushButton*  notificationBtn;
     static QPushButton*  logoutBtn;
+
+    // Footer
+    static QLabel*   footerLabel;
 
     // Main table
     static QTableWidget* mainTable;

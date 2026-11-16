@@ -1,9 +1,9 @@
 #ifndef OPENTICKETSDIALOG_H
 #define OPENTICKETSDIALOG_H
 
-#include <QDialog>
+#include "ModernDialog.h"
 
-class DatabaseManager;
+class LocalApi;
 class QTableWidget;
 class QPushButton;
 
@@ -11,12 +11,12 @@ class QPushButton;
  * Dialog showing all OPEN tickets.
  * Allows the cashier to Complete, Edit, or Delete an open ticket.
  */
-class OpenTicketsDialog : public QDialog
+class OpenTicketsDialog : public ModernDialog
 {
     Q_OBJECT
 
 public:
-    explicit OpenTicketsDialog(DatabaseManager* db, QWidget* parent = nullptr);
+    explicit OpenTicketsDialog(LocalApi* api, QWidget* parent = nullptr);
 
     // Result — check after exec() == Accepted
     enum class Action { None, Complete, Edit, Print };
@@ -37,7 +37,7 @@ private:
     void setButtonsEnabled(bool enabled);
     int  currentTicketId() const;
 
-    DatabaseManager* m_db;
+    LocalApi* m_api;
     QTableWidget*    m_table;
     QPushButton*     m_completeBtn;
     QPushButton*     m_editBtn;

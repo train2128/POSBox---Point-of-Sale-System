@@ -30,7 +30,7 @@ public:
 
     // Top bar elements
     static QLabel* userLabel;
-    static QPushButton* ticketsBtn;
+    static QLabel* incomeLabel;
     static QPushButton* notificationBtn;
     static QPushButton* logoutBtn;
 

@@ -3,12 +3,19 @@
 
 #include <QMainWindow>
 #include <QTimer>
+#include <QColor>
 
 class UserSession;
-class DatabaseManager;
+class LocalApi;
+class LocalImages;
 class ChangeNotifier;
+class NotificationBell;
 class QTableWidgetItem;
 class QResizeEvent;
+class QLabel;
+class QVBoxLayout;
+class QHBoxLayout;
+class QImage;
 
 namespace Ui {
 class MainWindow;
@@ -23,17 +30,18 @@ class InventoryWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit InventoryWindow(UserSession* session, DatabaseManager* dbManager,
-                             ChangeNotifier* notifier, QWidget* parent = nullptr);
+    explicit InventoryWindow(UserSession* session, LocalApi* api,
+                             LocalImages* images, ChangeNotifier* notifier,
+                             QWidget* parent = nullptr);
     ~InventoryWindow();
 
-    void retranslateUi();
+    // Handles a "Inventory|flag|id" deep-link (from the Launcher navigation stream).
+    void handleNavigation(const QString& action);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
 
 private slots:
-    void onTableSelectChanged(int index);
     void onSearchChanged(const QString& text);
     void onSearchTimer();
     void onAddClicked();
@@ -43,6 +51,7 @@ private slots:
     void onSelectionChanged();
     void onCellDoubleClicked(int row, int column);
     void onCellChanged(int row, int column);
+    void onProductImageReady(const QString& filename, int maxSize, const QImage& image);
 
     // Called on every flash timer tick to toggle out-of-stock row text color
     void onFlashTick();
@@ -51,11 +60,26 @@ signals:
     void logoutRequested();
 
 private:
-    // Setup
+    enum class StockFilter { All, OutOfStock, LowStock };
+
+    // Setup — Proposal A UI
     void setupUI();
     void setupConnections();
+    void setupHeader(QVBoxLayout* rootLayout);
+    void setupTabButtons(QHBoxLayout* actionLayout);
+    void setupActionBar(QVBoxLayout* rootLayout);
     void setupTableHeaders(int tableIndex);
+    void applyProductColumnRatios();
     void applyCategoryColumnRatio();
+
+    // Tab handling (replaces QComboBox tableSelect)
+    void onTabClicked(int index);
+
+    // KPI strip updates
+    void updateKPIs(int totalProducts, int outOfStock, int lowStock);
+    void setStockFilter(StockFilter filter, int lowStockThreshold);
+    void applyCurrentStockFilter();
+    void updateStockFilterButtons();
 
     // Data loading
     void loadCurrentTable();
@@ -90,6 +114,9 @@ private:
     // Returns the theme-appropriate default text color string (used as flash "off" state).
     QString defaultTextColor() const;
 
+    // Returns a distinct color for a letter badge based on the letter.
+    QColor badgeColorForLetter(const QString& letter) const;
+
     // Helpers
     int getSelectedRow() const;
     int getProductIdFromRow(int row) const;
@@ -99,7 +126,8 @@ private:
     Ui::MainWindow* ui;
 
     UserSession*     m_session;
-    DatabaseManager* m_db;
+    LocalApi*       m_api;
+    LocalImages*    m_images;
     ChangeNotifier*  m_notifier;
 
     // Search debounce timer — always allocated in constructor
@@ -113,9 +141,18 @@ private:
     bool m_flashState;
 
     int  m_currentTable;
+    QWidget* m_tabBar = nullptr;
+    StockFilter m_stockFilter;
+    int m_stockFilterLowThreshold;
     bool m_isEditingStock;
     int  m_editingStockRow;
     bool m_blockCellChanged;
+    bool m_reloadPending = false;   // a refresh that waits until the stock editor closes
+    void recountStockKpis();
+
+    // Notification system
+    NotificationBell* m_bell = nullptr;
+    void applyStockFilter(const QString& flag);
 };
 
 #endif // INVENTORYWINDOW_H

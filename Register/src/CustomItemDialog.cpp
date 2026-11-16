@@ -1,25 +1,22 @@
 #include "CustomItemDialog.h"
+#include "ModernDialog.h"
 #include "Prefixes.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QFormLayout>
+#include <QFrame>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QDoubleValidator>
 #include <QStyle>
+#include <QVBoxLayout>
 
 CustomItemDialog::CustomItemDialog(QWidget* parent)
-    : QDialog(parent)
+    : ModernDialog(Look::Card, "edit", Tone::Accent, tr("Custom item"),
+                   tr("Sell something that isn't in Inventory"), 420, parent)
     , m_nameEdit(nullptr)
     , m_costEdit(nullptr)
     , m_priceEdit(nullptr)
+    , m_profitValue(nullptr)
 {
     setObjectName("custom-item-dialog");
-    setWindowTitle(tr("Add Custom Item"));
-    setModal(true);
-    setFixedWidth(320);
-
     setupUI();
 }
 
@@ -27,71 +24,42 @@ CustomItemDialog::~CustomItemDialog() {}
 
 void CustomItemDialog::setupUI()
 {
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(16, 16, 16, 16);
-    mainLayout->setSpacing(12);
-
-    // Title
-    QLabel* titleLabel = new QLabel(tr("Custom Item"), this);
-    titleLabel->setObjectName("custom-item-title");
-    titleLabel->setAlignment(Qt::AlignCenter);
-    mainLayout->addWidget(titleLabel);
-
-    // Form fields
-    QFormLayout* form = new QFormLayout();
-    form->setSpacing(8);
-    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
     m_nameEdit = new QLineEdit(this);
-    m_nameEdit->setObjectName("custom-item-field");
     m_nameEdit->setPlaceholderText(tr("Item name"));
+    addField(tr("Item name"), m_nameEdit);
 
-    m_costEdit = new QLineEdit(this);
-    m_costEdit->setObjectName("custom-item-field");
-    m_costEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
-    m_costEdit->setValidator(new QDoubleValidator(0.0, 999999.0, AppConstants::PRICE_DECIMALS, this));
+    m_costEdit = moneyEdit(this);
+    m_priceEdit = moneyEdit(this);
+    addFieldPair(tr("Cost (optional)"), m_costEdit, tr("Price"), m_priceEdit);
 
-    m_priceEdit = new QLineEdit(this);
-    m_priceEdit->setObjectName("custom-item-field");
-    m_priceEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
-    m_priceEdit->setValidator(new QDoubleValidator(0.0, 999999.0, AppConstants::PRICE_DECIMALS, this));
+    QLabel* profitLabel = nullptr;
+    body()->addWidget(resultStrip(&profitLabel, &m_profitValue));
+    profitLabel->setText(tr("Profit on this item"));
 
-    QLabel* nameLabel  = new QLabel(tr("Name:"),  this);
-    QLabel* costLabel  = new QLabel(tr("Cost:"),  this);
-    QLabel* priceLabel = new QLabel(tr("Price:"), this);
-    nameLabel->setObjectName("custom-item-label");
-    costLabel->setObjectName("custom-item-label");
-    priceLabel->setObjectName("custom-item-label");
+    QPushButton* okBtn = addFooter(tr("Add to Cart"), "plus", "add");
+    connect(okBtn, &QPushButton::clicked, this, &CustomItemDialog::onOkClicked);
+    connect(m_costEdit, &QLineEdit::textChanged, this, &CustomItemDialog::updateProfit);
+    connect(m_priceEdit, &QLineEdit::textChanged, this, &CustomItemDialog::updateProfit);
 
-    form->addRow(nameLabel,  m_nameEdit);
-    form->addRow(costLabel,  m_costEdit);
-    form->addRow(priceLabel, m_priceEdit);
-    mainLayout->addLayout(form);
-
-    // OK / Cancel
-    QHBoxLayout* btnLayout = new QHBoxLayout();
-    btnLayout->setSpacing(8);
-
-    QPushButton* okBtn = new QPushButton(tr("Add to Cart"), this);
-    okBtn->setObjectName("custom-item-ok");
-    okBtn->setProperty("btnStyle", "add");
-    okBtn->style()->unpolish(okBtn);
-    okBtn->style()->polish(okBtn);
-
-    QPushButton* cancelBtn = new QPushButton(tr("Cancel"), this);
-    cancelBtn->setObjectName("custom-item-cancel");
-    cancelBtn->setProperty("btnStyle", "delete");
-    cancelBtn->style()->unpolish(cancelBtn);
-    cancelBtn->style()->polish(cancelBtn);
-
-    btnLayout->addWidget(okBtn);
-    btnLayout->addWidget(cancelBtn);
-    mainLayout->addLayout(btnLayout);
-
-    connect(okBtn,     &QPushButton::clicked, this, &CustomItemDialog::onOkClicked);
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-
+    updateProfit();
     m_nameEdit->setFocus();
+}
+
+void CustomItemDialog::updateProfit()
+{
+    const double price = itemPrice();
+    QString text = "-";
+    bool loss = false;
+    if (price > 0 && !m_costEdit->text().trimmed().isEmpty()) {
+        const double profit = price - itemCost();
+        loss = profit < 0;
+        text = QString("%1  ·  %2%").arg(AppHelpers::formatAmount(profit))
+                   .arg(profit / price * 100.0, 0, 'f', 1);
+    }
+    m_profitValue->setText(text);
+    m_profitValue->setProperty("loss", loss);
+    m_profitValue->style()->unpolish(m_profitValue);
+    m_profitValue->style()->polish(m_profitValue);
 }
 
 void CustomItemDialog::onOkClicked()
@@ -118,10 +86,10 @@ QString CustomItemDialog::itemName() const
 
 double CustomItemDialog::itemCost() const
 {
-    return m_costEdit->text().toDouble();
+    return moneyValue(m_costEdit);
 }
 
 double CustomItemDialog::itemPrice() const
 {
-    return m_priceEdit->text().toDouble();
+    return moneyValue(m_priceEdit);
 }

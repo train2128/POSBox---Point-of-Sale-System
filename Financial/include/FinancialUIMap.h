@@ -6,8 +6,6 @@ class QPushButton;
 class QComboBox;
 class QTableWidget;
 class QGroupBox;
-class QScrollArea;
-class QWidget;
 
 namespace Ui {
 class FinancialWindow;
@@ -15,7 +13,7 @@ class FinancialWindow;
 
 /**
  * Static UI element mapper for the Financial window.
- * Maps all UI elements from financialwindow.ui to static pointers.
+ * Maps the UI elements from financialwindow.ui to static pointers.
  */
 class FinancialUIMap
 {
@@ -30,15 +28,13 @@ public:
     // ── Tab 1 — Overview ──────────────────────────────────────────────────────
     static QComboBox*    monthSelect;
     static QComboBox*    yearSelect;
-    static QTableWidget* monthlyTable;
-    static QTableWidget* weeklyTable;
-    static QTableWidget* topSalesTable;
     static QGroupBox*    expensesBox;
     static QPushButton*  addExpenseBtn;
     static QPushButton*  deleteExpenseBtn;
     static QTableWidget* expensesTable;
 
-    // ── Tab 2 — Yearly Summary ───────────────────────────────────────────────
+    // ── Tab 2 — Yearly Summary ────────────────────────────────────────────────
+    static QComboBox*    yearlySelect;
     static QTableWidget* yearlyTable;
 
 private:

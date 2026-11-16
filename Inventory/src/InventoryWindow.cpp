@@ -1,24 +1,45 @@
+#include <QCoreApplication>
 #include "InventoryWindow.h"
+#include "Animations.h"
 #include "ui_Invenorywindow.h"
 #include "InventoryUIMap.h"
 #include "InventoryConstants.h"
 #include "ProductDialog.h"
 #include "UserSession.h"
-#include "DatabaseManager.h"
+#include "LocalApi.h"
+#include "LocalImages.h"
 #include "ChangeNotifier.h"
-#include "QueryRepository.h"
 #include "AccessControl.h"
+#include "Permissions.h"
 #include "StyleManager.h"
 #include "LogoutManager.h"
+#include "NotificationManager.h"
+#include <QApplication>
+#include "NotificationBell.h"
+#include "NotificationActions.h"
 #include "Prefixes.h"
-#include "TranslationManager.h"
-#include <QSqlQuery>
-#include <QSqlError>
 #include <QTableWidgetItem>
 #include <QHeaderView>
+#include <QStyledItemDelegate>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPaintEvent>
+#include <QStyleOption>
+#include <QVariantAnimation>
+#include "Animations.h"
+#include "LineIcons.h"
+#include "ModernDialog.h"
+#include "ToggleSwitch.h"
+#include <QStyle>
+#include <QFileInfo>
+#include <QVBoxLayout>
 #include <QResizeEvent>
 #include <QColor>
+#include <QImage>
+#include <QPixmap>
 #include <QDialog>
+#include <QSpinBox>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -30,26 +51,476 @@
 #include <QDateEdit>
 #include <QPushButton>
 #include <QDialogButtonBox>
+#include <QFrame>
+#include <QSpacerItem>
+#include <QSizePolicy>
 #include <QDebug>
 
-InventoryWindow::InventoryWindow(UserSession* session, DatabaseManager* dbManager,
-                                 ChangeNotifier* notifier, QWidget* parent)
+namespace {
+
+constexpr int BadgeColorRole = Qt::UserRole + 1;
+constexpr int StockKindRole = Qt::UserRole + 2;
+constexpr int StockQuantityRole = Qt::UserRole + 3;
+constexpr int ProductImagePathRole = Qt::UserRole + 4;
+constexpr int ProductImagePixmapRole = Qt::UserRole + 5;
+constexpr int ProductImageSize = 44;
+
+// The holder of the tab buttons: it paints the pill, which slides from tab to tab.
+class InventoryTabBar final : public QWidget
+{
+public:
+    explicit InventoryTabBar(QWidget* parent = nullptr)
+        : QWidget(parent), m_slide(new QVariantAnimation(this))
+    {
+        m_slide->setDuration(PillSlideMs);
+        m_slide->setEasingCurve(QEasingCurve::OutCubic);
+        connect(m_slide, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+            m_pill = value.toRectF();
+            update();
+            for (QWidget* child : findChildren<QWidget*>())
+                child->update();
+        });
+    }
+
+    void watchTab(QWidget* tab) { tab->installEventFilter(this); }
+
+    void setActive(QWidget* tab)
+    {
+        const QRectF target = pillFor(tab);
+        const bool animate = isVisible() && Animations::enabled() && !m_pill.isNull() && tab != m_active;
+        m_active = tab;
+        m_slide->stop();
+        if (animate) {
+            m_slide->setStartValue(m_pill);
+            m_slide->setEndValue(target);
+            m_slide->start();
+        } else {
+            m_pill = target;
+            update();
+        }
+    }
+
+    // How much of a tab the pill covers right now, from 0 to 1.
+    qreal coverage(const QWidget* tab) const
+    {
+        const QRectF overlap = m_pill.intersected(QRectF(tab->geometry()));
+        return overlap.isEmpty() ? 0.0 : overlap.width() / qMax(1, tab->width());
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QStyleOption option;
+        option.initFrom(this);
+        QPainter painter(this);
+        style()->drawPrimitive(QStyle::PE_Widget, &option, &painter, this);
+        if (m_pill.isNull())
+            return;
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(palette().color(QPalette::Highlight));
+        painter.drawRoundedRect(m_pill, m_pill.height() / 2.0, m_pill.height() / 2.0);
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        // The layout moved the tabs (first show, resize, font change).
+        if (watched == m_active && (event->type() == QEvent::Resize || event->type() == QEvent::Move)
+            && m_slide->state() != QAbstractAnimation::Running) {
+            m_pill = pillFor(m_active);
+            update();
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    static constexpr int PillSlideMs = 260;
+
+    static QRectF pillFor(const QWidget* tab)
+    {
+        return QRectF(tab->geometry()).adjusted(1, 1, -1, -1);
+    }
+
+    QVariantAnimation* m_slide;
+    QRectF m_pill;
+    QWidget* m_active = nullptr;
+};
+
+// A tab's text turns white as the pill slides under it.
+class InventoryTabButton final : public QPushButton
+{
+public:
+    using QPushButton::QPushButton;
+
+protected:
+    void paintEvent(QPaintEvent* event) override
+    {
+        const auto* bar = static_cast<const InventoryTabBar*>(parentWidget());
+        const qreal covered = bar->coverage(this);
+        if (covered <= 0.0) {
+            QPushButton::paintEvent(event);
+            return;
+        }
+
+        const QColor from = LineIcons::colors().muted;
+        const qreal k = qMin(1.0, covered * 1.25);
+        QPainter painter(this);
+        painter.setPen(QColor::fromRgbF(from.redF() + (1.0 - from.redF()) * k,
+                                        from.greenF() + (1.0 - from.greenF()) * k,
+                                        from.blueF() + (1.0 - from.blueF()) * k));
+        painter.setFont(font());
+        painter.drawText(rect(), Qt::AlignCenter, text());
+    }
+};
+
+// Add and Edit Category share one window.
+bool categoryForm(QWidget* parent, bool editing, QString& name, QString& description)
+{
+    ModernDialog dlg(ModernDialog::Look::Card, "grid", ModernDialog::Tone::Accent,
+                     editing ? QCoreApplication::translate("InventoryWindow", "Edit category") : QCoreApplication::translate("InventoryWindow", "Add category"),
+                     QCoreApplication::translate("InventoryWindow", "Group products in Inventory and Register"), 420, parent);
+    auto* nameEdit = new QLineEdit(name, &dlg);
+    nameEdit->setPlaceholderText(QCoreApplication::translate("InventoryWindow", "Category name"));
+    dlg.addField(QCoreApplication::translate("InventoryWindow", "Name"), nameEdit);
+    auto* descEdit = new QLineEdit(description, &dlg);
+    descEdit->setPlaceholderText(QCoreApplication::translate("InventoryWindow", "Optional"));
+    dlg.addField(QCoreApplication::translate("InventoryWindow", "Description"), descEdit);
+
+    QPushButton* ok = dlg.addFooter(editing ? QCoreApplication::translate("InventoryWindow", "Save") : QCoreApplication::translate("InventoryWindow", "Add Category"), editing ? "check" : "plus", "add");
+    QObject::connect(ok, &QPushButton::clicked, &dlg, [&]() {
+        if (nameEdit->text().trimmed().isEmpty()) {
+            AppHelpers::showWarning(&dlg, AppHelpers::trMsg(InventoryConstants::MSG_CATEGORY_NAME_EMPTY));
+            nameEdit->setFocus();
+        } else {
+            dlg.accept();
+        }
+    });
+    nameEdit->setFocus();
+    nameEdit->selectAll();
+
+    if (dlg.exec() != QDialog::Accepted)
+        return false;
+    name = nameEdit->text().trimmed();
+    description = descEdit->text().trimmed();
+    return true;
+}
+
+struct DiscountValues {
+    QString name;
+    QString type = "percentage";
+    double value = 0.0;
+    bool active = true;
+    QDate start;  // invalid = no start date
+    QDate end;    // invalid = no end date
+};
+
+// A label with a switch, above a date field the switch turns on and off.
+QVBoxLayout* optionalDate(QDialog* dlg, const QString& label, const QDate& date, ToggleSwitch*& onOff, QDateEdit*& edit)
+{
+    auto* column = new QVBoxLayout;
+    column->setSpacing(5);
+    auto* top = new QHBoxLayout;
+    auto* caption = new QLabel(label, dlg);
+    caption->setObjectName("modalFieldLabel");
+    onOff = new ToggleSwitch(dlg);
+    onOff->setChecked(date.isValid());
+    top->addWidget(caption, 1);
+    top->addWidget(onOff);
+    edit = new QDateEdit(date.isValid() ? date : QDate::currentDate(), dlg);
+    edit->setCalendarPopup(true);
+    edit->setDisplayFormat("dd/MM/yyyy");
+    edit->setEnabled(date.isValid());
+    QObject::connect(onOff, &QCheckBox::toggled, edit, &QDateEdit::setEnabled);
+    column->addLayout(top);
+    column->addWidget(edit);
+    return column;
+}
+
+// Add and Edit Discount share one window.
+bool discountForm(QWidget* parent, bool editing, DiscountValues& values)
+{
+    ModernDialog dlg(ModernDialog::Look::Card, "tag", ModernDialog::Tone::Amber,
+                     editing ? QCoreApplication::translate("InventoryWindow", "Edit discount") : QCoreApplication::translate("InventoryWindow", "Add discount"),
+                     QCoreApplication::translate("InventoryWindow", "Saved here, applied at the Register"), 470, parent);
+    auto* nameEdit = new QLineEdit(values.name, &dlg);
+    nameEdit->setPlaceholderText(QCoreApplication::translate("InventoryWindow", "Discount name"));
+    dlg.addField(QCoreApplication::translate("InventoryWindow", "Name"), nameEdit);
+
+    auto* typeCombo = new QComboBox(&dlg);
+    typeCombo->addItem(QCoreApplication::translate("InventoryWindow", "Percentage (%)"), "percentage");
+    typeCombo->addItem(QCoreApplication::translate("InventoryWindow", "Fixed Amount"), "amount");
+    typeCombo->setCurrentIndex(values.type == "percentage" ? 0 : 1);
+    auto* valueSpin = new QDoubleSpinBox(&dlg);
+    valueSpin->setMinimum(0.0);
+    valueSpin->setDecimals(AppConstants::PRICE_DECIMALS);
+    // The unit beside the value follows the type.
+    const auto updateUnit = [typeCombo, valueSpin]() {
+        const bool percent = typeCombo->currentData().toString() == "percentage";
+        valueSpin->setMaximum(percent ? 100.0 : 9999999.0);
+        valueSpin->setSuffix(percent ? QString(" %") : QString(" %1").arg(AppConstants::CURRENCY));
+    };
+    updateUnit();
+    valueSpin->setValue(values.value);
+    QObject::connect(typeCombo, &QComboBox::currentIndexChanged, valueSpin, updateUnit);
+    dlg.addFieldPair(QCoreApplication::translate("InventoryWindow", "Type"), typeCombo, QCoreApplication::translate("InventoryWindow", "Value"), valueSpin);
+
+    ToggleSwitch* startSwitch = nullptr;
+    ToggleSwitch* endSwitch = nullptr;
+    QDateEdit* startEdit = nullptr;
+    QDateEdit* endEdit = nullptr;
+    auto* dates = new QHBoxLayout;
+    dates->setSpacing(10);
+    dates->addLayout(optionalDate(&dlg, QCoreApplication::translate("InventoryWindow", "Start date"), values.start, startSwitch, startEdit), 1);
+    dates->addLayout(optionalDate(&dlg, QCoreApplication::translate("InventoryWindow", "End date"), values.end, endSwitch, endEdit), 1);
+    dlg.body()->addLayout(dates);
+
+    auto* activeRow = new QHBoxLayout;
+    auto* activeLabel = new QLabel(QCoreApplication::translate("InventoryWindow", "Active"), &dlg);
+    activeLabel->setObjectName("modalSwitchLabel");
+    auto* activeSwitch = new ToggleSwitch(&dlg);
+    activeSwitch->setChecked(values.active);
+    activeRow->addWidget(activeLabel, 1);
+    activeRow->addWidget(activeSwitch);
+    dlg.body()->addLayout(activeRow);
+
+    QPushButton* ok = dlg.addFooter(editing ? QCoreApplication::translate("InventoryWindow", "Save") : QCoreApplication::translate("InventoryWindow", "Add Discount"), editing ? "check" : "plus", "add");
+    QObject::connect(ok, &QPushButton::clicked, &dlg, [&]() {
+        if (nameEdit->text().trimmed().isEmpty()) {
+            AppHelpers::showWarning(&dlg, AppHelpers::trMsg(InventoryConstants::MSG_DISCOUNT_NAME_EMPTY));
+            nameEdit->setFocus();
+        } else {
+            dlg.accept();
+        }
+    });
+    nameEdit->setFocus();
+    nameEdit->selectAll();
+
+    if (dlg.exec() != QDialog::Accepted)
+        return false;
+    values.name = nameEdit->text().trimmed();
+    values.type = typeCombo->currentData().toString();
+    values.value = valueSpin->value();
+    values.active = activeSwitch->isChecked();
+    values.start = startSwitch->isChecked() ? startEdit->date() : QDate();
+    values.end = endSwitch->isChecked() ? endEdit->date() : QDate();
+    return true;
+}
+
+QVariant dateValue(const QDate& date)
+{
+    return date.isValid() ? QVariant(date.toString("yyyy-MM-dd")) : QVariant();
+}
+
+class InventoryCellDelegate final : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        const bool badgeCell =
+            index.column() == InventoryConstants::COL_PRODUCT_BADGE
+            && index.data(BadgeColorRole).canConvert<QColor>();
+        const QPixmap productImage = index.data(ProductImagePixmapRole).value<QPixmap>();
+        const QString stockKind = index.data(StockKindRole).toString();
+        const bool stockCell = index.column() == InventoryConstants::COL_PRODUCT_STOCK
+                               && !stockKind.isEmpty();
+        if (!badgeCell && !stockCell) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        QStyleOptionViewItem cell(option);
+        initStyleOption(&cell, index);
+        const QString text = stockCell
+            ? stockDisplayText(stockKind, index.data(StockQuantityRole).toInt())
+            : index.data(Qt::DisplayRole).toString();
+        cell.text.clear();
+        const QStyle* style = cell.widget ? cell.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &cell, painter, cell.widget);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        const QRect bounds = cell.rect.adjusted(4, 4, -4, -4);
+        if (badgeCell) {
+            const QSize badgeSize(ProductImageSize, ProductImageSize);
+            const QRect badgeRect(QPoint(bounds.center().x() - badgeSize.width() / 2,
+                                         bounds.center().y() - badgeSize.height() / 2),
+                                  badgeSize);
+            if (!productImage.isNull()) {
+                painter->save();
+                QPainterPath clipPath;
+                clipPath.addRoundedRect(badgeRect, 9, 9);
+                painter->setClipPath(clipPath);
+                const QPixmap scaled = productImage.scaled(
+                    badgeRect.size(), Qt::KeepAspectRatioByExpanding,
+                    Qt::SmoothTransformation);
+                const QRect source((scaled.width() - badgeRect.width()) / 2,
+                                   (scaled.height() - badgeRect.height()) / 2,
+                                   badgeRect.width(), badgeRect.height());
+                painter->drawPixmap(badgeRect, scaled, source);
+                painter->restore();
+            } else {
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(index.data(BadgeColorRole).value<QColor>());
+                painter->drawRoundedRect(badgeRect, 9, 9);
+                painter->setPen(Qt::white);
+                QFont badgeFont = cell.font;
+                badgeFont.setBold(true);
+                painter->setFont(badgeFont);
+                painter->drawText(badgeRect, Qt::AlignCenter, text);
+            }
+        } else {
+            const QFontMetrics metrics(cell.font);
+            const int chipWidth = qMin(bounds.width(),
+                                       metrics.horizontalAdvance(text) + 24);
+            const int chipHeight = qMin(bounds.height(), 32);
+            const QRect chipRect(bounds.center().x() - chipWidth / 2,
+                                 bounds.center().y() - chipHeight / 2,
+                                 chipWidth, chipHeight);
+
+            QColor accent;
+            if (stockKind == QLatin1String("out")) {
+                accent = QColor("#E74C3C");
+            } else if (stockKind == QLatin1String("low")) {
+                accent = QColor("#C8A000");
+            } else if (stockKind == QLatin1String("variants")) {
+                accent = QColor("#4A90E2");
+            } else if (stockKind == QLatin1String("service")) {
+                accent = cell.palette.color(QPalette::Mid);
+            } else {
+                accent = cell.palette.color(QPalette::Mid);
+            }
+
+            QColor foreground = accent;
+            if (stockKind == QLatin1String("normal")
+                || stockKind == QLatin1String("service")) {
+                const QVariant foregroundData = index.data(Qt::ForegroundRole);
+                foreground = foregroundData.isValid()
+                    ? foregroundData.value<QBrush>().color()
+                    : cell.palette.color(QPalette::Text);
+            }
+            QColor fill = accent;
+            fill.setAlpha(24);
+            QColor outline = accent;
+            outline.setAlpha(190);
+
+            painter->setPen(QPen(outline, 1));
+            painter->setBrush(fill);
+            painter->drawRoundedRect(chipRect, 12, 12);
+            painter->setPen(foreground);
+            QFont chipFont = cell.font;
+            chipFont.setBold(true);
+            painter->setFont(chipFont);
+            painter->drawText(chipRect, Qt::AlignCenter, text);
+        }
+        painter->restore();
+    }
+
+    // Double-clicking a stock cell edits the quantity in a compact number box
+    // shaped like the stock chip. Only plain stock (not services/variants).
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
+                          const QModelIndex& index) const override
+    {
+        if (index.column() != InventoryConstants::COL_PRODUCT_STOCK)
+            return nullptr;
+        const QString kind = index.data(StockKindRole).toString();
+        if (kind != QLatin1String("normal") && kind != QLatin1String("low") && kind != QLatin1String("out"))
+            return nullptr;
+        Q_UNUSED(option)
+        auto* editor = new QSpinBox(parent);
+        editor->setObjectName("stockEditor");
+        editor->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        editor->setRange(0, 9999999);
+        editor->setAlignment(Qt::AlignCenter);
+        editor->setFrame(false);
+        editor->setAccelerated(false);
+        const bool light = StyleManager::loadColorScheme() == StyleManager::ColorScheme::Light;
+        editor->setStyleSheet(QString(
+            "QSpinBox#stockEditor { background-color: %1; color: %2; border: 1.5px solid %3; border-radius: 12px;"
+            " padding: 0px 8px; min-height: 0px; font-weight: bold; selection-background-color: %3; selection-color: white; }")
+            .arg(light ? "#FFFFFF" : "#1B2332", light ? "#40331F" : "#E6EAF0", light ? "#C8894A" : "#4A90E2"));
+        return editor;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override
+    {
+        if (auto* spin = qobject_cast<QSpinBox*>(editor)) {
+            spin->setValue(index.data(StockQuantityRole).toInt());
+            // Select the number so typing replaces it.
+            QTimer::singleShot(0, spin, [spin] { spin->selectAll(); });
+            return;
+        }
+        QStyledItemDelegate::setEditorData(editor, index);
+    }
+
+    void setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const override
+    {
+        if (auto* spin = qobject_cast<QSpinBox*>(editor)) {
+            spin->interpretText();
+            model->setData(index, QString::number(spin->value()), Qt::EditRole);
+            return;
+        }
+        QStyledItemDelegate::setModelData(editor, model, index);
+    }
+
+    void updateEditorGeometry(QWidget* editor, const QStyleOptionViewItem& option,
+                              const QModelIndex&) const override
+    {
+        const QRect bounds = option.rect.adjusted(4, 4, -4, -4);
+        const int w = qMin(bounds.width(), 110);
+        const int h = qMin(bounds.height(), 32);
+        editor->setGeometry(bounds.center().x() - w / 2 + 1, bounds.center().y() - h / 2 + 1, w, h);
+    }
+
+private:
+    static QString stockDisplayText(const QString& kind, int quantity)
+    {
+        if (kind == QLatin1String("out"))
+            return QCoreApplication::translate("InventoryWindow", "Out of stock");
+        if (kind == QLatin1String("low"))
+            return QCoreApplication::translate("InventoryWindow", "%1 left").arg(quantity);
+        if (kind == QLatin1String("variants"))
+            return QCoreApplication::translate("InventoryWindow", "Variants");
+        if (kind == QLatin1String("service"))
+            return QCoreApplication::translate("InventoryWindow", "Service");
+        return QString::number(quantity);
+    }
+};
+
+} // namespace
+
+InventoryWindow::InventoryWindow(UserSession* session, LocalApi* api,
+                                 LocalImages* images, ChangeNotifier* notifier,
+                                 QWidget* parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
     , m_session(session)
-    , m_db(dbManager)
+    , m_api(api)
+    , m_images(images)
     , m_notifier(notifier)
     , m_searchTimer(new QTimer(this))
     , m_currentSearch("")
     , m_flashTimer(nullptr)
     , m_flashState(true)
     , m_currentTable(InventoryConstants::TABLE_PRODUCTS)
+    , m_stockFilter(StockFilter::All)
+    , m_stockFilterLowThreshold(InventoryConstants::LOW_STOCK_THRESHOLD)
     , m_isEditingStock(false)
     , m_editingStockRow(-1)
     , m_blockCellChanged(false)
 {
     ui->setupUi(this);
     InventoryUIMap::initialize(ui);
+
+    // Setup notification system
+    m_bell = new NotificationBell(m_api, InventoryUIMap::notificationBtn,
+                                  m_session ? m_session->username() : QString(),
+                                  m_notifier, this);
+
+
+
     setupUI();
     setupConnections();
     setupTableHeaders(m_currentTable);
@@ -67,79 +538,342 @@ InventoryWindow::~InventoryWindow()
 
 void InventoryWindow::setupUI()
 {
+    setWindowTitle(tr("POSBox - Inventory"));
+
     m_searchTimer->setSingleShot(true);
     m_searchTimer->setInterval(AppConstants::SEARCH_DELAY_MS);
 
-    if (centralWidget()) {
-        centralWidget()->setObjectName("centralwidget");
+    QWidget* central = centralWidget();
+    if (central) {
+        central->setObjectName("centralwidget");
     }
 
+    // Permission-based visibility for Delete
     if (m_session && InventoryUIMap::deleteBtn) {
-        bool canDelete = AccessControl::canPerformAction(
-            m_session->username(), AccessControl::DeleteProduct, m_db->database());
+        bool canDelete = Permissions::can(
+            m_api, m_session->username(), m_session->role(),
+            AccessControl::PERMISSION_DELETE_PRODUCT);
         InventoryUIMap::deleteBtn->setVisible(canDelete);
     }
 
-    if (InventoryUIMap::mainTable) {
-        QTableWidget* t  = InventoryUIMap::mainTable;
-        QHeaderView*  hh = t->horizontalHeader();
-
-        t->setSelectionBehavior(QAbstractItemView::SelectRows);
-        t->setSelectionMode(QAbstractItemView::SingleSelection);
-        t->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        t->verticalHeader()->setVisible(false);
-        t->setAlternatingRowColors(true);
-
-        hh->setSectionsMovable(false);
-        hh->setSectionsClickable(false);
-        t->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    // ── Build Proposal A layout programmatically ─────────────────────────
+    QVBoxLayout* rootLayout = qobject_cast<QVBoxLayout*>(central->layout());
+    if (!rootLayout) {
+        rootLayout = new QVBoxLayout(central);
+    } else {
+        while (QLayoutItem* item = rootLayout->takeAt(0))
+            delete item;
     }
+    rootLayout->setContentsMargins(40, 40, 40, 40);
+    rootLayout->setSpacing(16);
 
-    retranslateUi();
+    // Create footer label (not in .ui file)
+    InventoryUIMap::footerLabel = new QLabel();
+    InventoryUIMap::footerLabel->setObjectName("footerLabel");
+    InventoryUIMap::footerLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+
+    // 1) HEADER: title/subtitle left, KPI strip right
+    setupHeader(rootLayout);
+
+    // 2) TABS, SEARCH, AND ACTIONS share the reference's toolbar row.
+    setupActionBar(rootLayout);
+
+    // 3) MAIN TABLE
+    rootLayout->addWidget(InventoryUIMap::mainTable, 1);
+
+    // 4) FOOTER: sorting/info line
+    rootLayout->addWidget(InventoryUIMap::footerLabel);
+    // Table configuration.
+    QTableWidget* t = InventoryUIMap::mainTable;
+    QHeaderView*  hh = t->horizontalHeader();
+    t->setSelectionBehavior(QAbstractItemView::SelectRows);
+    t->setSelectionMode(QAbstractItemView::SingleSelection);
+    t->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    t->verticalHeader()->setVisible(false);
+    t->setAlternatingRowColors(true);
+    t->setShowGrid(true);
+    t->setObjectName("mainTable");
+    auto* delegate = new InventoryCellDelegate(t);
+    t->setItemDelegate(delegate);
+    connect(delegate, &QAbstractItemDelegate::closeEditor, this, [this]() {
+        m_isEditingStock = false;
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_reloadPending) return;
+            m_reloadPending = false;
+            loadCurrentTable();
+        });
+    });
+    hh->setSectionsMovable(false);
+    hh->setSectionsClickable(false);
+    t->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);
+    t->verticalHeader()->setDefaultSectionSize(64);
 }
 
-void InventoryWindow::retranslateUi()
+// ── Header: Inventory title + KPI strip ─────────────────────────────────
+
+void InventoryWindow::setupHeader(QVBoxLayout* rootLayout)
 {
-    setWindowTitle(tr("POSBox - Inventory"));
+    QWidget* headerWidget = new QWidget();
+    headerWidget->setObjectName("headerWidget");
+    QHBoxLayout* headerLayout = new QHBoxLayout(headerWidget);
+    headerLayout->setContentsMargins(0, 0, 0, 0);
+    headerLayout->setSpacing(16);
 
-    // UIMap elements
-    if (InventoryUIMap::searchBox)
-        InventoryUIMap::searchBox->setPlaceholderText(tr("Search..."));
-    if (InventoryUIMap::editBtn)
-        InventoryUIMap::editBtn->setText(tr("Edit"));
-    if (InventoryUIMap::deleteBtn)
-        InventoryUIMap::deleteBtn->setText(tr("Delete"));
-    if (InventoryUIMap::addBtn)
-        InventoryUIMap::addBtn->setText(tr("Add"));
-    if (InventoryUIMap::tableSelect) {
-        InventoryUIMap::tableSelect->setItemText(0, tr("Products"));
-        InventoryUIMap::tableSelect->setItemText(1, tr("Categories"));
-        InventoryUIMap::tableSelect->setItemText(2, tr("Discounts"));
+    // Title + subtitle on the left
+    QWidget* titleBlock = new QWidget();
+    QVBoxLayout* titleLayout = new QVBoxLayout(titleBlock);
+    titleLayout->setContentsMargins(0, 0, 0, 0);
+    titleLayout->setSpacing(2);
+
+    InventoryUIMap::headerTitle = new QLabel(tr("Inventory"));
+    InventoryUIMap::headerTitle->setObjectName("headerTitle");
+
+    InventoryUIMap::headerSubtitle = new QLabel(tr("Products, pricing and stock"));
+    InventoryUIMap::headerSubtitle->setObjectName("headerSubtitle");
+
+    titleLayout->addWidget(InventoryUIMap::headerTitle);
+    titleLayout->addWidget(InventoryUIMap::headerSubtitle);
+
+    headerLayout->addWidget(titleBlock);
+
+    // Spacer pushes KPI strip to the right
+    headerLayout->addStretch(1);
+
+    // KPI strip: 3 pill labels
+    QWidget* kpiStrip = new QWidget();
+    kpiStrip->setObjectName("kpiStrip");
+    QHBoxLayout* kpiLayout = new QHBoxLayout(kpiStrip);
+    kpiLayout->setContentsMargins(0, 0, 0, 0);
+    kpiLayout->setSpacing(8);
+
+    auto makeKpiLabel = [&](QPushButton*& ptr, const QString& objectName) {
+        ptr = new QPushButton("0");
+        ptr->setObjectName(objectName);
+        ptr->setFlat(true);
+        ptr->setAutoDefault(false);
+        ptr->setCursor(Qt::PointingHandCursor);
+        kpiLayout->addWidget(ptr);
+    };
+
+    makeKpiLabel(InventoryUIMap::productsCountLabel, "kpiLabel");
+    makeKpiLabel(InventoryUIMap::outOfStockLabel,    "kpiLabelOut");
+    makeKpiLabel(InventoryUIMap::lowStockLabel,      "kpiLabelLow");
+    updateStockFilterButtons();
+
+    headerLayout->addWidget(kpiStrip);
+
+    InventoryUIMap::logoutBtn->setObjectName("inventoryLogoutBtn");
+    InventoryUIMap::logoutBtn->setText(QString());
+    InventoryUIMap::notificationBtn->setObjectName("notificationBtn");
+    InventoryUIMap::notificationBtn->setFixedSize(36, 36);
+    InventoryUIMap::logoutBtn->setFixedSize(36, 36);
+    headerLayout->addWidget(InventoryUIMap::notificationBtn);
+    headerLayout->addWidget(InventoryUIMap::logoutBtn);
+
+    rootLayout->addWidget(headerWidget);
+}
+
+// ── Tab bar: Products / Categories / Discounts pill buttons ─────────────
+
+void InventoryWindow::setupTabButtons(QHBoxLayout* actionLayout)
+{
+    auto* tabWidget = new InventoryTabBar();
+    m_tabBar = tabWidget;
+    tabWidget->setObjectName("tabBarWidget");
+    QHBoxLayout* tabLayout = new QHBoxLayout(tabWidget);
+    tabLayout->setContentsMargins(4, 4, 4, 4);
+    tabLayout->setSpacing(2);
+
+    auto makeTab = [&](QPushButton*& ptr, const QString& text, const QString& objName, bool active) {
+        ptr = new InventoryTabButton(text);
+        ptr->setObjectName(objName);
+        ptr->setCheckable(false);
+        ptr->setProperty("tabActive", active ? "true" : "false");
+        ptr->setCursor(Qt::PointingHandCursor);
+        ptr->setProperty("posboxNoFeedback", true);
+        tabLayout->addWidget(ptr);
+        tabWidget->watchTab(ptr);
+    };
+
+    makeTab(InventoryUIMap::productsTab,   tr("Products"),   "tabProducts", true);
+    makeTab(InventoryUIMap::categoriesTab, tr("Categories"), "tabCategories", false);
+    makeTab(InventoryUIMap::discountsTab,  tr("Discounts"),  "tabDiscounts", false);
+
+    actionLayout->addWidget(tabWidget);
+    tabWidget->setActive(InventoryUIMap::productsTab);
+
+    // Connect tab buttons
+    connect(InventoryUIMap::productsTab,   &QPushButton::clicked, this, [this]() { onTabClicked(InventoryConstants::TABLE_PRODUCTS); });
+    connect(InventoryUIMap::categoriesTab, &QPushButton::clicked, this, [this]() { onTabClicked(InventoryConstants::TABLE_CATEGORIES); });
+    connect(InventoryUIMap::discountsTab,  &QPushButton::clicked, this, [this]() { onTabClicked(InventoryConstants::TABLE_DISCOUNTS); });
+}
+
+// ── Search + action bar ─────────────────────────────────────────────────
+
+void InventoryWindow::setupActionBar(QVBoxLayout* rootLayout)
+{
+    QWidget* actionWidget = new QWidget();
+    actionWidget->setObjectName("actionBarWidget");
+    QHBoxLayout* actionLayout = new QHBoxLayout(actionWidget);
+    actionLayout->setContentsMargins(0, 0, 0, 0);
+    actionLayout->setSpacing(10);
+
+    setupTabButtons(actionLayout);
+
+    // Search box (left)
+    QWidget* searchBlock = new QWidget();
+    QHBoxLayout* searchLayout = new QHBoxLayout(searchBlock);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+    searchLayout->setSpacing(8);
+
+    InventoryUIMap::searchBox->setObjectName("searchBox");
+    InventoryUIMap::searchBox->setPlaceholderText(tr("Search name, category, barcode..."));
+    searchLayout->addWidget(InventoryUIMap::searchBox);
+
+    actionLayout->addWidget(searchBlock, 1);
+
+    actionLayout->addSpacing(8);
+
+    // Action buttons: Add (green), Edit (blue), Delete (red)
+    InventoryUIMap::addBtn->setObjectName("actionAdd");
+    InventoryUIMap::addBtn->setText(tr("Add"));
+    InventoryUIMap::addBtn->setProperty("btnStyle", "add");
+    InventoryUIMap::addBtn->setCursor(Qt::PointingHandCursor);
+    actionLayout->addWidget(InventoryUIMap::addBtn);
+
+    InventoryUIMap::editBtn->setObjectName("actionEdit");
+    InventoryUIMap::editBtn->setText(tr("Edit"));
+    InventoryUIMap::editBtn->setProperty("btnStyle", "edit");
+    InventoryUIMap::editBtn->setCursor(Qt::PointingHandCursor);
+    actionLayout->addWidget(InventoryUIMap::editBtn);
+
+    InventoryUIMap::deleteBtn->setObjectName("actionDelete");
+    InventoryUIMap::deleteBtn->setText(tr("Delete"));
+    InventoryUIMap::deleteBtn->setProperty("btnStyle", "delete");
+    InventoryUIMap::deleteBtn->setCursor(Qt::PointingHandCursor);
+    actionLayout->addWidget(InventoryUIMap::deleteBtn);
+
+    rootLayout->addWidget(actionWidget);
+}
+
+// ── Tab click handler (replaces QComboBox tableSelect) ──────────────────
+
+void InventoryWindow::onTabClicked(int index)
+{
+    m_stockFilter = StockFilter::All;
+    m_stockFilterLowThreshold = InventoryConstants::LOW_STOCK_THRESHOLD;
+    updateStockFilterButtons();
+
+    // Update tab button states
+    InventoryUIMap::productsTab->setProperty("tabActive", index == InventoryConstants::TABLE_PRODUCTS ? "true" : "false");
+    InventoryUIMap::productsTab->style()->unpolish(InventoryUIMap::productsTab);
+    InventoryUIMap::productsTab->style()->polish(InventoryUIMap::productsTab);
+    InventoryUIMap::productsTab->update();
+
+    InventoryUIMap::categoriesTab->setProperty("tabActive", index == InventoryConstants::TABLE_CATEGORIES ? "true" : "false");
+    InventoryUIMap::categoriesTab->style()->unpolish(InventoryUIMap::categoriesTab);
+    InventoryUIMap::categoriesTab->style()->polish(InventoryUIMap::categoriesTab);
+    InventoryUIMap::categoriesTab->update();
+
+    InventoryUIMap::discountsTab->setProperty("tabActive", index == InventoryConstants::TABLE_DISCOUNTS ? "true" : "false");
+    InventoryUIMap::discountsTab->style()->unpolish(InventoryUIMap::discountsTab);
+    InventoryUIMap::discountsTab->style()->polish(InventoryUIMap::discountsTab);
+    InventoryUIMap::discountsTab->update();
+
+    static_cast<InventoryTabBar*>(m_tabBar)->setActive(
+        index == InventoryConstants::TABLE_PRODUCTS ? InventoryUIMap::productsTab
+        : index == InventoryConstants::TABLE_CATEGORIES ? InventoryUIMap::categoriesTab
+                                                        : InventoryUIMap::discountsTab);
+
+    Animations::fadeChange(InventoryUIMap::mainTable);
+    m_currentTable = index;
+    InventoryUIMap::searchBox->clear();
+    m_currentSearch.clear();
+    setupTableHeaders(index);
+    loadCurrentTable();
+
+    if (InventoryUIMap::editBtn)   InventoryUIMap::editBtn->setEnabled(false);
+    if (InventoryUIMap::deleteBtn) InventoryUIMap::deleteBtn->setEnabled(false);
+
+    // Stop flashing when leaving the products table
+    if (index != InventoryConstants::TABLE_PRODUCTS) {
+        if (m_flashTimer) {
+            m_flashTimer->stop();
+            m_flashTimer->deleteLater();
+            m_flashTimer = nullptr;
+        }
     }
-    if (InventoryUIMap::logoutBtn)
-        InventoryUIMap::logoutBtn->setToolTip(tr("Logout"));
+}
 
-    // Table headers
-    if (!InventoryUIMap::mainTable) return;
+// ── KPI strip update ────────────────────────────────────────────────────
 
-    QTableWidget* t = InventoryUIMap::mainTable;
-    switch (m_currentTable) {
-    case InventoryConstants::TABLE_PRODUCTS:
-        t->setHorizontalHeaderLabels({tr("ID"), tr("Name"), tr("Stock"), tr("Cost"), tr("Price")});
-        break;
-    case InventoryConstants::TABLE_CATEGORIES:
-        t->setHorizontalHeaderLabels({tr("Name"), tr("Description")});
-        break;
-    case InventoryConstants::TABLE_DISCOUNTS:
-        t->setHorizontalHeaderLabels({tr("Name"), tr("Value"), tr("Active"), tr("End Date")});
-        break;
+void InventoryWindow::updateKPIs(int totalProducts, int outOfStock, int lowStock)
+{
+    const auto show = [](QPushButton* label, int value, const QString& text) {
+        if (!label)
+            return;
+        Animations::animateValues(label, {double(value)}, [label, text](const QVector<double>& shown) {
+            label->setText(QString("%1 %2").arg(qRound(shown[0])).arg(text));
+        });
+    };
+    show(InventoryUIMap::productsCountLabel, totalProducts, tr("products"));
+    show(InventoryUIMap::outOfStockLabel, outOfStock, tr("out of stock"));
+    show(InventoryUIMap::lowStockLabel, lowStock, tr("low stock"));
+}
+
+void InventoryWindow::setStockFilter(StockFilter filter, int lowStockThreshold)
+{
+    m_stockFilter = filter;
+    m_stockFilterLowThreshold = qMax(1, lowStockThreshold);
+    updateStockFilterButtons();
+    applyCurrentStockFilter();
+}
+
+void InventoryWindow::updateStockFilterButtons()
+{
+    const QList<QPair<QPushButton*, StockFilter>> buttons = {
+        {InventoryUIMap::productsCountLabel, StockFilter::All},
+        {InventoryUIMap::outOfStockLabel, StockFilter::OutOfStock},
+        {InventoryUIMap::lowStockLabel, StockFilter::LowStock}
+    };
+    for (const auto& entry : buttons) {
+        QPushButton* button = entry.first;
+        if (!button)
+            continue;
+        button->setProperty("filterActive", entry.second == m_stockFilter);
+        button->style()->unpolish(button);
+        button->style()->polish(button);
+        button->update();
+    }
+}
+
+void InventoryWindow::applyCurrentStockFilter()
+{
+    QTableWidget* table = InventoryUIMap::mainTable;
+    if (!table || m_currentTable != InventoryConstants::TABLE_PRODUCTS)
+        return;
+
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QTableWidgetItem* stockItem =
+            table->item(row, InventoryConstants::COL_PRODUCT_STOCK);
+        bool ok = false;
+        const int stock = stockItem ? stockItem->text().toInt(&ok) : 0;
+        bool visible = true;
+        if (m_stockFilter == StockFilter::OutOfStock)
+            visible = ok && stock == InventoryConstants::OUT_OF_STOCK_VALUE;
+        else if (m_stockFilter == StockFilter::LowStock)
+            visible = ok && stock > 0 && stock <= m_stockFilterLowThreshold;
+        table->setRowHidden(row, !visible);
     }
 }
 
 void InventoryWindow::setupConnections()
 {
-    connect(InventoryUIMap::tableSelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &InventoryWindow::onTableSelectChanged);
+    if (m_images) {
+        connect(m_images, &LocalImages::pixmapReady,
+                this, &InventoryWindow::onProductImageReady);
+    }
+
     connect(InventoryUIMap::searchBox, &QLineEdit::textChanged,
             this, &InventoryWindow::onSearchChanged);
     connect(m_searchTimer, &QTimer::timeout,
@@ -150,6 +884,22 @@ void InventoryWindow::setupConnections()
             this, &InventoryWindow::onEditClicked);
     connect(InventoryUIMap::deleteBtn, &QPushButton::clicked,
             this, &InventoryWindow::onDeleteClicked);
+    connect(InventoryUIMap::productsCountLabel, &QPushButton::clicked, this, [this]() {
+        if (m_currentTable != InventoryConstants::TABLE_PRODUCTS)
+            onTabClicked(InventoryConstants::TABLE_PRODUCTS);
+        setStockFilter(StockFilter::All, InventoryConstants::LOW_STOCK_THRESHOLD);
+    });
+    connect(InventoryUIMap::outOfStockLabel, &QPushButton::clicked, this, [this]() {
+        if (m_currentTable != InventoryConstants::TABLE_PRODUCTS)
+            onTabClicked(InventoryConstants::TABLE_PRODUCTS);
+        setStockFilter(StockFilter::OutOfStock, InventoryConstants::LOW_STOCK_THRESHOLD);
+    });
+    connect(InventoryUIMap::lowStockLabel, &QPushButton::clicked, this, [this]() {
+        if (m_currentTable != InventoryConstants::TABLE_PRODUCTS)
+            onTabClicked(InventoryConstants::TABLE_PRODUCTS);
+        setStockFilter(StockFilter::LowStock, InventoryConstants::LOW_STOCK_THRESHOLD);
+    });
+    connect(InventoryUIMap::notificationBtn, &QPushButton::clicked, m_bell, &NotificationBell::togglePanel);
     connect(InventoryUIMap::logoutBtn, &QPushButton::clicked,
             this, &InventoryWindow::onLogoutClicked);
     connect(InventoryUIMap::mainTable, &QTableWidget::itemSelectionChanged,
@@ -159,16 +909,15 @@ void InventoryWindow::setupConnections()
     connect(InventoryUIMap::mainTable, &QTableWidget::cellChanged,
             this, &InventoryWindow::onCellChanged);
 
-    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
-            this, &InventoryWindow::retranslateUi);
-
     if (m_notifier) {
         connect(m_notifier, &ChangeNotifier::productChanged,
-                this, [this](int) { if (m_currentTable == InventoryConstants::TABLE_PRODUCTS) loadCurrentTable(); });
+                this, [this](int) { if (m_currentTable == InventoryConstants::TABLE_PRODUCTS) loadCurrentTable(); m_bell->refreshNow(); });
         connect(m_notifier, &ChangeNotifier::categoryChanged,
                 this, [this](int) { if (m_currentTable == InventoryConstants::TABLE_CATEGORIES) loadCurrentTable(); });
         connect(m_notifier, &ChangeNotifier::discountChanged,
                 this, [this](int) { if (m_currentTable == InventoryConstants::TABLE_DISCOUNTS) loadCurrentTable(); });
+        connect(m_notifier, &ChangeNotifier::appNavigateRequested,
+                this, &InventoryWindow::handleNavigation);
     }
 }
 
@@ -189,21 +938,26 @@ void InventoryWindow::setupTableHeaders(int tableIndex)
 
     case InventoryConstants::TABLE_PRODUCTS:
         t->setColumnCount(InventoryConstants::PRODUCT_COL_COUNT);
-        t->setHorizontalHeaderLabels({tr("ID"), tr("Name"), tr("Stock"), tr("Cost"), tr("Price")});
-        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_ID,    QHeaderView::Fixed);
-        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_NAME,  QHeaderView::Stretch);
-        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_STOCK, QHeaderView::Fixed);
-        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_COST,  QHeaderView::Fixed);
-        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_PRICE, QHeaderView::Fixed);
-        t->setColumnWidth(InventoryConstants::COL_PRODUCT_ID,    50);
-        t->setColumnWidth(InventoryConstants::COL_PRODUCT_STOCK, 65);
-        t->setColumnWidth(InventoryConstants::COL_PRODUCT_COST,  115);
-        t->setColumnWidth(InventoryConstants::COL_PRODUCT_PRICE, 115);
+        t->setHorizontalHeaderLabels({ tr("ID"), "", tr("Name"), tr("Category"), tr("Stock"), tr("Cost"), tr("Price"), tr("Margin")});
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_ID,       QHeaderView::Fixed);
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_BADGE,    QHeaderView::Fixed);
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_NAME,     QHeaderView::Fixed);
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_CATEGORY, QHeaderView::Fixed);
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_STOCK,    QHeaderView::Fixed);
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_COST,     QHeaderView::Fixed);
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_PRICE,    QHeaderView::Fixed);
+        h->setSectionResizeMode(InventoryConstants::COL_PRODUCT_MARGIN,   QHeaderView::Fixed);
+        // ID column hidden — used internally only
+        t->setColumnWidth(InventoryConstants::COL_PRODUCT_ID,       0);
+        applyProductColumnRatios();
+        t->setColumnHidden(InventoryConstants::COL_PRODUCT_ID, true);
         break;
 
     case InventoryConstants::TABLE_CATEGORIES:
         t->setColumnCount(InventoryConstants::CATEGORY_COL_COUNT);
-        t->setHorizontalHeaderLabels({tr("Name"), tr("Description")});
+        t->setHorizontalHeaderLabels({ tr("Name"), tr("Description")});
+        t->setColumnHidden(InventoryConstants::COL_CATEGORY_NAME, false);
+        t->setColumnHidden(InventoryConstants::COL_CATEGORY_DESCRIPTION, false);
         h->setSectionResizeMode(InventoryConstants::COL_CATEGORY_NAME,        QHeaderView::Fixed);
         h->setSectionResizeMode(InventoryConstants::COL_CATEGORY_DESCRIPTION, QHeaderView::Stretch);
         applyCategoryColumnRatio();
@@ -211,13 +965,47 @@ void InventoryWindow::setupTableHeaders(int tableIndex)
 
     case InventoryConstants::TABLE_DISCOUNTS:
         t->setColumnCount(InventoryConstants::DISCOUNT_COL_COUNT);
-        t->setHorizontalHeaderLabels({tr("Name"), tr("Value"), tr("Active"), tr("End Date")});
+        t->setHorizontalHeaderLabels({ tr("Name"), tr("Value"), tr("Active"), tr("End Date")});
+        for (int column = 0; column < InventoryConstants::DISCOUNT_COL_COUNT; ++column)
+            t->setColumnHidden(column, false);
         h->setSectionResizeMode(InventoryConstants::COL_DISCOUNT_NAME,     QHeaderView::Stretch);
         h->setSectionResizeMode(InventoryConstants::COL_DISCOUNT_VALUE,    QHeaderView::Stretch);
         h->setSectionResizeMode(InventoryConstants::COL_DISCOUNT_ACTIVE,   QHeaderView::Stretch);
         h->setSectionResizeMode(InventoryConstants::COL_DISCOUNT_END_DATE, QHeaderView::Stretch);
         break;
     }
+}
+
+void InventoryWindow::applyProductColumnRatios()
+{
+    if (!InventoryUIMap::mainTable) return;
+    if (m_currentTable != InventoryConstants::TABLE_PRODUCTS) return;
+
+    const int totalWidth = InventoryUIMap::mainTable->viewport()->width();
+    if (totalWidth <= 0) return;
+
+    QTableWidget* table = InventoryUIMap::mainTable;
+    table->setColumnWidth(InventoryConstants::COL_PRODUCT_BADGE,
+                          qRound(totalWidth * 0.052));
+    table->setColumnWidth(InventoryConstants::COL_PRODUCT_CATEGORY,
+                          qRound(totalWidth * 0.14));
+    table->setColumnWidth(InventoryConstants::COL_PRODUCT_STOCK,
+                          qRound(totalWidth * 0.16));
+    table->setColumnWidth(InventoryConstants::COL_PRODUCT_COST,
+                          qRound(totalWidth * 0.112));
+    table->setColumnWidth(InventoryConstants::COL_PRODUCT_PRICE,
+                          qRound(totalWidth * 0.112));
+    table->setColumnWidth(InventoryConstants::COL_PRODUCT_MARGIN,
+                          qRound(totalWidth * 0.103));
+
+    const int nameWidth = totalWidth
+        - table->columnWidth(InventoryConstants::COL_PRODUCT_BADGE)
+        - table->columnWidth(InventoryConstants::COL_PRODUCT_CATEGORY)
+        - table->columnWidth(InventoryConstants::COL_PRODUCT_STOCK)
+        - table->columnWidth(InventoryConstants::COL_PRODUCT_COST)
+        - table->columnWidth(InventoryConstants::COL_PRODUCT_PRICE)
+        - table->columnWidth(InventoryConstants::COL_PRODUCT_MARGIN);
+    table->setColumnWidth(InventoryConstants::COL_PRODUCT_NAME, qMax(0, nameWidth));
 }
 
 void InventoryWindow::applyCategoryColumnRatio()
@@ -235,31 +1023,13 @@ void InventoryWindow::applyCategoryColumnRatio()
 void InventoryWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
+    applyProductColumnRatios();
     applyCategoryColumnRatio();
 }
 
 // ===== TABLE SWITCHING & SEARCH =====
 
-void InventoryWindow::onTableSelectChanged(int index)
-{
-    m_currentTable = index;
-    InventoryUIMap::searchBox->clear();
-    m_currentSearch.clear();
-    setupTableHeaders(index);
-    loadCurrentTable();
-
-    if (InventoryUIMap::editBtn)   InventoryUIMap::editBtn->setEnabled(false);
-    if (InventoryUIMap::deleteBtn) InventoryUIMap::deleteBtn->setEnabled(false);
-
-    // Stop flashing when leaving the products table
-    if (index != InventoryConstants::TABLE_PRODUCTS) {
-        if (m_flashTimer) {
-            m_flashTimer->stop();
-            m_flashTimer->deleteLater();
-            m_flashTimer = nullptr;
-        }
-    }
-}
+/// onTableSelectChanged replaced by onTabClicked (see setupTabButtons)
 
 void InventoryWindow::onSearchChanged(const QString& text)
 {
@@ -274,6 +1044,11 @@ void InventoryWindow::onSearchTimer()
 
 void InventoryWindow::loadCurrentTable()
 {
+    // Never rebuild the table under the stock editor: refresh once it closes.
+    if (m_isEditingStock) {
+        m_reloadPending = true;
+        return;
+    }
     switch (m_currentTable) {
     case InventoryConstants::TABLE_PRODUCTS:   loadProducts(m_currentSearch);   break;
     case InventoryConstants::TABLE_CATEGORIES: loadCategories(m_currentSearch); break;
@@ -285,78 +1060,89 @@ void InventoryWindow::loadCurrentTable()
 
 void InventoryWindow::loadProducts(const QString& search)
 {
-    if (!m_db || !InventoryUIMap::mainTable) return;
+    if (!m_api || !InventoryUIMap::mainTable) return;
 
     m_blockCellChanged = true;
     InventoryUIMap::mainTable->setRowCount(0);
 
-    QSqlQuery query(m_db->database());
-
-    QString sql = Queries::PRODUCT_SELECT_ALL;
-    if (!search.isEmpty()) {
-        sql = "SELECT p.id, p.name, p.description, p.cost, p.price, p.stock_quantity, p.track_stock, "
-              "p.min_stock_alert, p.barcode, p.sku, p.category_id, c.name as category_name, "
-              "p.is_service, p.has_variants, p.image_path, p.created_at, p.updated_at "
-              "FROM products p LEFT JOIN categories c ON p.category_id = c.id "
-              "WHERE p.name LIKE ? OR c.name LIKE ? "
-              "ORDER BY p.name";
-        query.prepare(sql);
-        query.addBindValue("%" + search + "%");
-        query.addBindValue("%" + search + "%");
-    } else {
-        query.prepare(sql);
-    }
-
-    if (!query.exec()) {
-        qWarning() << "Failed to load products:" << query.lastError().text();
+    // product_list includes the computed stock;
+    // ordering is by name already, which the bucket sort below relies on.
+    QList<DataRow> rows = m_api->products();
+    if (!m_api->ok()) {
+        qWarning() << "Failed to load products:" << m_api->lastError();
         m_blockCellChanged = false;
         return;
     }
 
-    // ── Collect all rows from DB into buckets for sorting ────────────────────
+    // ── Collect all rows into buckets for sorting ────────────────────────────
     //
     // Sort order:
     //   Bucket 0 — out of stock  (tracked, non-service, non-variant, stock == 0)
     //   Bucket 1 — low stock     (tracked, non-service, non-variant, 1 <= stock <= LOW_STOCK_THRESHOLD)
     //   Bucket 2 — normal / no-stock-tracking items (services, variants, stock > LOW_STOCK_THRESHOLD)
     //
-    // Within each bucket rows are kept in the DB ORDER BY p.name order (already alphabetical).
-    // Services and variant products land in bucket 2 so they're interspersed alphabetically
-    // among normal-stock items.
+    // Within each bucket rows are kept in the ORDER BY p.name order (already
+    // alphabetical). Services and variant products land in bucket 2 so they're
+    // interspersed alphabetically among normal-stock items.
+    //
+    // Search filtering is done here (the generic select is
+    // equality-only): name OR category name contains the term.
 
     struct ProductRow {
         int     id;
         QString name;
+        QString imagePath;
         int     stock;
         double  cost;
         double  price;
         bool    isService;
         bool    hasVariants;
         int     bucket; // 0 = out-of-stock, 1 = low, 2 = normal/no-stock
+        QString categoryName; // NEW for Proposal A
     };
 
     QList<ProductRow> bucket0; // out of stock
     QList<ProductRow> bucket1; // low stock
     QList<ProductRow> bucket2; // normal / service / variant
 
-    while (query.next()) {
+    int totalProducts = 0;
+    int outOfStockCount = 0;
+    int lowStockCount = 0;
+
+    for (const DataRow& row : rows) {
+        const QString name = row.value("name").toString();
+        const QString categoryName = row.value("category_name").toString();
+        const QString barcode = row.value("barcode").toString();
+
+        if (!search.isEmpty()
+            && !name.contains(search, Qt::CaseInsensitive)
+            && !categoryName.contains(search, Qt::CaseInsensitive)
+            && !barcode.contains(search, Qt::CaseInsensitive))
+            continue;
+
         ProductRow r;
-        r.id          = query.value("id").toInt();
-        r.name        = query.value("name").toString();
-        r.stock       = query.value("stock_quantity").toInt();
-        r.cost        = query.value("cost").toDouble();
-        r.price       = query.value("price").toDouble();
-        r.isService   = query.value("is_service").toBool();
-        r.hasVariants = query.value("has_variants").toBool();
+        r.id          = row.value("id").toInt();
+        r.name        = name;
+        r.imagePath   = row.value("image_path").toString();
+        r.stock       = row.value("stock_quantity").toInt();
+        r.cost        = row.value("cost").toDouble();
+        r.price       = row.value("price").toDouble();
+        r.isService   = row.value("is_service").toInt() != 0;
+        r.hasVariants = row.value("has_variants").toInt() != 0;
+        r.categoryName = categoryName;
+
+        totalProducts++;
 
         // Only tracked, non-service, non-variant products participate in stock sorting
         bool stockTracked = !r.isService && !r.hasVariants;
 
         if (stockTracked && r.stock == InventoryConstants::OUT_OF_STOCK_VALUE) {
             r.bucket = 0;
+            outOfStockCount++;
             bucket0.append(r);
         } else if (stockTracked && r.stock <= InventoryConstants::LOW_STOCK_THRESHOLD) {
             r.bucket = 1;
+            lowStockCount++;
             bucket1.append(r);
         } else {
             r.bucket = 2;
@@ -364,26 +1150,79 @@ void InventoryWindow::loadProducts(const QString& search)
         }
     }
 
+    // Update KPI strip
+    updateKPIs(totalProducts, outOfStockCount, lowStockCount);
+
+    // Footer sorting info (matches Proposal A footer)
+    if (InventoryUIMap::footerLabel) {
+        InventoryUIMap::footerLabel->setText(
+            tr("%1 products · out-of-stock first · low stock second · name order within each group")
+            .arg(totalProducts));
+    }
+
     // ── Insert rows in sorted order: bucket0, bucket1, bucket2 ───────────────
-    // Each bucket is already alphabetically sorted because the SQL uses ORDER BY p.name.
+    // Each bucket is already alphabetically sorted because the query orders by name.
 
     auto insertRows = [&](const QList<ProductRow>& rows) {
         for (const ProductRow& r : rows) {
             int tableRow = InventoryUIMap::mainTable->rowCount();
             InventoryUIMap::mainTable->insertRow(tableRow);
 
+            // ID column (hidden)
             QTableWidgetItem* idItem = new QTableWidgetItem(QString::number(r.id));
             idItem->setTextAlignment(Qt::AlignCenter);
             InventoryUIMap::mainTable->setItem(tableRow, InventoryConstants::COL_PRODUCT_ID, idItem);
 
+            // Separate badge and name cells to match the reference table.
+            QString letter = r.name.left(1).toUpper();
+            QTableWidgetItem* badgeItem = new QTableWidgetItem(letter);
+            badgeItem->setTextAlignment(Qt::AlignCenter);
+            badgeItem->setData(BadgeColorRole, badgeColorForLetter(letter));
+            badgeItem->setData(ProductImagePathRole, r.imagePath);
+            if (!r.imagePath.isEmpty() && m_images) {
+                if (m_images->isCached(r.imagePath, ProductImageSize)) {
+                    badgeItem->setData(
+                        ProductImagePixmapRole,
+                        m_images->thumbnail(r.imagePath, ProductImageSize));
+                } else {
+                    m_images->requestPixmap(r.imagePath, ProductImageSize);
+                }
+            }
+            InventoryUIMap::mainTable->setItem(
+                tableRow, InventoryConstants::COL_PRODUCT_BADGE, badgeItem);
+
             QTableWidgetItem* nameItem = new QTableWidgetItem(r.name);
-            nameItem->setTextAlignment(Qt::AlignCenter);
+            nameItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
             InventoryUIMap::mainTable->setItem(tableRow, InventoryConstants::COL_PRODUCT_NAME, nameItem);
 
-            // Stock cell: empty string for services and variant products
-            QString stockText = (r.isService || r.hasVariants) ? "" : QString::number(r.stock);
+            // Category column
+            QTableWidgetItem* categoryItem = new QTableWidgetItem(r.categoryName);
+            categoryItem->setTextAlignment(Qt::AlignCenter);
+            InventoryUIMap::mainTable->setItem(tableRow, InventoryConstants::COL_PRODUCT_CATEGORY, categoryItem);
+
+            // The item keeps a raw numeric value for filtering and inline stock
+            // editing; the delegate renders the user-facing stock chip.
+            QString stockText;
+            QString stockKind;
+            if (r.isService) {
+                stockText = tr("Service");
+                stockKind = "service";
+            } else if (r.hasVariants) {
+                stockText = tr("Variants");
+                stockKind = "variants";
+            } else {
+                stockText = QString::number(r.stock);
+                stockKind = r.stock == InventoryConstants::OUT_OF_STOCK_VALUE
+                    ? "out"
+                    : (r.stock <= InventoryConstants::LOW_STOCK_THRESHOLD
+                           ? "low" : "normal");
+            }
             QTableWidgetItem* stockItem = new QTableWidgetItem(stockText);
             stockItem->setTextAlignment(Qt::AlignCenter);
+            stockItem->setData(StockKindRole, stockKind);
+            stockItem->setData(StockQuantityRole, r.stock);
+            if (stockKind == QLatin1String("service") || stockKind == QLatin1String("variants"))
+                stockItem->setFlags(stockItem->flags() & ~Qt::ItemIsEditable);
             InventoryUIMap::mainTable->setItem(tableRow, InventoryConstants::COL_PRODUCT_STOCK, stockItem);
 
             // Cost / price: empty for variant products
@@ -396,6 +1235,20 @@ void InventoryWindow::loadProducts(const QString& search)
                 r.hasVariants ? "" : AppHelpers::formatPrice(r.price));
             priceItem->setTextAlignment(Qt::AlignCenter);
             InventoryUIMap::mainTable->setItem(tableRow, InventoryConstants::COL_PRODUCT_PRICE, priceItem);
+
+            // Margin column: (price - cost) / price * 100, or — for variants/services
+            QTableWidgetItem* marginItem;
+            if (r.hasVariants || r.isService) {
+                marginItem = new QTableWidgetItem("—");
+            } else {
+                double margin = 0.0;
+                if (r.price > 0) {
+                    margin = (r.price - r.cost) / r.price * 100.0;
+                }
+                marginItem = new QTableWidgetItem(QString("%1%").arg(margin, 0, 'f', 1));
+            }
+            marginItem->setTextAlignment(Qt::AlignCenter);
+            InventoryUIMap::mainTable->setItem(tableRow, InventoryConstants::COL_PRODUCT_MARGIN, marginItem);
         }
     };
 
@@ -404,6 +1257,7 @@ void InventoryWindow::loadProducts(const QString& search)
     insertRows(bucket2);
 
     m_blockCellChanged = false;
+    applyCurrentStockFilter();
 
     qDebug() << "Loaded" << InventoryUIMap::mainTable->rowCount()
              << "products (out-of-stock:" << bucket0.size()
@@ -417,35 +1271,33 @@ void InventoryWindow::loadProducts(const QString& search)
 
 void InventoryWindow::loadCategories(const QString& search)
 {
-    if (!m_db || !InventoryUIMap::mainTable) return;
+    if (!m_api || !InventoryUIMap::mainTable) return;
 
     m_blockCellChanged = true;
     InventoryUIMap::mainTable->setRowCount(0);
 
-    QSqlQuery query(m_db->database());
-    if (!search.isEmpty()) {
-        query.prepare("SELECT id, name, description FROM categories WHERE name LIKE ? ORDER BY name");
-        query.addBindValue("%" + search + "%");
-    } else {
-        query.prepare("SELECT id, name, description FROM categories ORDER BY display_order, name");
-    }
-
-    if (!query.exec()) {
-        qWarning() << "Failed to load categories:" << query.lastError().text();
+    QList<DataRow> rows = m_api->select(
+        "categories", {}, search.isEmpty() ? "display_order, name" : "name");
+    if (!m_api->ok()) {
+        qWarning() << "Failed to load categories:" << m_api->lastError();
         m_blockCellChanged = false;
         return;
     }
 
-    while (query.next()) {
+    for (const DataRow& c : rows) {
+        const QString name = c.value("name").toString();
+        if (!search.isEmpty() && !name.contains(search, Qt::CaseInsensitive))
+            continue;
+
         int row = InventoryUIMap::mainTable->rowCount();
         InventoryUIMap::mainTable->insertRow(row);
 
-        QTableWidgetItem* nameItem = new QTableWidgetItem(query.value("name").toString());
-        nameItem->setData(Qt::UserRole, query.value("id").toInt());
+        QTableWidgetItem* nameItem = new QTableWidgetItem(name);
+        nameItem->setData(Qt::UserRole, c.value("id").toInt());
         nameItem->setTextAlignment(Qt::AlignCenter);
         InventoryUIMap::mainTable->setItem(row, InventoryConstants::COL_CATEGORY_NAME, nameItem);
 
-        QTableWidgetItem* descItem = new QTableWidgetItem(query.value("description").toString());
+        QTableWidgetItem* descItem = new QTableWidgetItem(c.value("description").toString());
         descItem->setTextAlignment(Qt::AlignCenter);
         InventoryUIMap::mainTable->setItem(row, InventoryConstants::COL_CATEGORY_DESCRIPTION, descItem);
     }
@@ -456,40 +1308,37 @@ void InventoryWindow::loadCategories(const QString& search)
 
 void InventoryWindow::loadDiscounts(const QString& search)
 {
-    if (!m_db || !InventoryUIMap::mainTable) return;
+    if (!m_api || !InventoryUIMap::mainTable) return;
 
     m_blockCellChanged = true;
     InventoryUIMap::mainTable->setRowCount(0);
 
-    QSqlQuery query(m_db->database());
-    if (!search.isEmpty()) {
-        query.prepare("SELECT id, name, type, value, is_active, end_date FROM discounts WHERE name LIKE ? ORDER BY name");
-        query.addBindValue("%" + search + "%");
-    } else {
-        query.prepare("SELECT id, name, type, value, is_active, end_date FROM discounts ORDER BY name");
-    }
-
-    if (!query.exec()) {
-        qWarning() << "Failed to load discounts:" << query.lastError().text();
+    QList<DataRow> rows = m_api->select("discounts", {}, "name");
+    if (!m_api->ok()) {
+        qWarning() << "Failed to load discounts:" << m_api->lastError();
         m_blockCellChanged = false;
         return;
     }
 
-    while (query.next()) {
+    for (const DataRow& d : rows) {
+        const QString name = d.value("name").toString();
+        if (!search.isEmpty() && !name.contains(search, Qt::CaseInsensitive))
+            continue;
+
         int row = InventoryUIMap::mainTable->rowCount();
         InventoryUIMap::mainTable->insertRow(row);
 
-        QString type    = query.value("type").toString();
-        double  value   = query.value("value").toDouble();
-        bool    isActive = query.value("is_active").toBool();
-        QString endDate = query.value("end_date").toString();
+        QString type    = d.value("type").toString();
+        double  value   = d.value("value").toDouble();
+        bool    isActive = d.value("is_active").toInt() != 0;
+        QString endDate = d.value("end_date").toString();
 
         QString valueStr = (type == "percentage")
                                ? QString("%1%").arg(value, 0, 'f', 1)
                                : AppHelpers::formatPrice(value);
 
-        QTableWidgetItem* nameItem = new QTableWidgetItem(query.value("name").toString());
-        nameItem->setData(Qt::UserRole, query.value("id").toInt());
+        QTableWidgetItem* nameItem = new QTableWidgetItem(name);
+        nameItem->setData(Qt::UserRole, d.value("id").toInt());
         nameItem->setTextAlignment(Qt::AlignCenter);
         InventoryUIMap::mainTable->setItem(row, InventoryConstants::COL_DISCOUNT_NAME, nameItem);
 
@@ -497,7 +1346,7 @@ void InventoryWindow::loadDiscounts(const QString& search)
         valueItem->setTextAlignment(Qt::AlignCenter);
         InventoryUIMap::mainTable->setItem(row, InventoryConstants::COL_DISCOUNT_VALUE, valueItem);
 
-        QTableWidgetItem* activeItem = new QTableWidgetItem(isActive ? tr("Yes") : tr("No"));
+        QTableWidgetItem* activeItem = new QTableWidgetItem(isActive ? tr("Yes") : "No");
         activeItem->setTextAlignment(Qt::AlignCenter);
         InventoryUIMap::mainTable->setItem(row, InventoryConstants::COL_DISCOUNT_ACTIVE, activeItem);
 
@@ -510,6 +1359,24 @@ void InventoryWindow::loadDiscounts(const QString& search)
     qDebug() << "Loaded" << InventoryUIMap::mainTable->rowCount() << "discounts";
 }
 
+void InventoryWindow::onProductImageReady(const QString& filename, int maxSize,
+                                          const QImage& image)
+{
+    if (image.isNull() || maxSize != ProductImageSize || !InventoryUIMap::mainTable)
+        return;
+
+    QTableWidget* table = InventoryUIMap::mainTable;
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QTableWidgetItem* badge = table->item(row, InventoryConstants::COL_PRODUCT_BADGE);
+        if (!badge)
+            continue;
+        if (QFileInfo(badge->data(ProductImagePathRole).toString()).fileName() != filename)
+            continue;
+        badge->setData(ProductImagePixmapRole, QPixmap::fromImage(image));
+    }
+    table->viewport()->update();
+}
+
 // ===== STOCK COLOR HELPERS =====
 
 QString InventoryWindow::defaultTextColor() const
@@ -518,6 +1385,27 @@ QString InventoryWindow::defaultTextColor() const
     return (StyleManager::loadColorScheme() == StyleManager::ColorScheme::Light)
                ? QString(InventoryConstants::COLOR_TEXT_LIGHT_THEME)
                : QString(InventoryConstants::COLOR_TEXT_DARK_THEME);
+}
+
+QColor InventoryWindow::badgeColorForLetter(const QString& letter) const
+{
+    // Deterministic color per letter — same letter always gets the same color.
+    // Colors chosen to be legible on dark background.
+    static const struct { const char* letter; const char* color; } map[] = {
+        {"A", "#4A90E2"}, {"B", "#E74C3C"}, {"C", "#27AE60"}, {"D", "#F39C12"},
+        {"E", "#9B59B6"}, {"F", "#1ABC9C"}, {"G", "#34495E"}, {"H", "#E67E22"},
+        {"I", "#3498DB"}, {"J", "#9A5B7C"}, {"K", "#7FB3D5"}, {"L", "#D7BDE2"},
+        {"M", "#F9E79F"}, {"N", "#AAB7B8"}, {"O", "#F5CBA7"}, {"P", "#A9CCE3"},
+        {"Q", "#D2B4DE"}, {"R", "#AED6F1"}, {"S", "#A2D9CE"}, {"T", "#F5B7B1"},
+        {"U", "#D5F5E3"}, {"V", "#FDEDEC"}, {"W", "#EAEDED"}, {"X", "#FEF9E7"},
+        {"Y", "#FCF3CF"}, {"Z", "#D5DBDB"},
+    };
+    QString u = letter.toUpper();
+    for (const auto& entry : map) {
+        if (u == QString::fromLatin1(entry.letter))
+            return QColor(QString::fromLatin1(entry.color));
+    }
+    return QColor("#9AA4B2"); // fallback gray
 }
 
 void InventoryWindow::applyStockColors()
@@ -624,6 +1512,8 @@ void InventoryWindow::onFlashTick()
     const QColor redColor(InventoryConstants::COLOR_OUT_OF_STOCK);
     const QColor defaultColor(defaultTextColor());
     const QColor activeColor = m_flashState ? redColor : defaultColor;
+    const bool wasBlocked = m_blockCellChanged;
+    m_blockCellChanged = true;
 
     const int rowCount = t->rowCount();
     for (int row = 0; row < rowCount; ++row) {
@@ -639,6 +1529,7 @@ void InventoryWindow::onFlashTick()
             stockItem->setForeground(activeColor);
         }
     }
+    m_blockCellChanged = wasBlocked;
 }
 
 // ===== SELECTION =====
@@ -651,12 +1542,6 @@ void InventoryWindow::onSelectionChanged()
     if (InventoryUIMap::editBtn)   InventoryUIMap::editBtn->setEnabled(hasSelection);
     if (InventoryUIMap::deleteBtn) InventoryUIMap::deleteBtn->setEnabled(hasSelection);
 
-    if (m_isEditingStock && hasSelection && row != m_editingStockRow) {
-        m_isEditingStock  = false;
-        m_editingStockRow = -1;
-        InventoryUIMap::mainTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        loadProducts(m_currentSearch);
-    }
 }
 
 // ===== INLINE STOCK EDIT =====
@@ -667,59 +1552,83 @@ void InventoryWindow::onCellDoubleClicked(int row, int column)
     if (column != InventoryConstants::COL_PRODUCT_STOCK) return;
 
     QTableWidgetItem* stockItem = InventoryUIMap::mainTable->item(row, InventoryConstants::COL_PRODUCT_STOCK);
-    if (!stockItem || stockItem->text().isEmpty()) return;
-
-    m_isEditingStock  = true;
-    m_editingStockRow = row;
-
-    InventoryUIMap::mainTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::AnyKeyPressed);
+    if (!stockItem || !(stockItem->flags() & Qt::ItemIsEditable)) return;
+    // The table itself never edits on its own (no edit triggers): only this
+    // cell opens, through the delegate's number box.
+    m_isEditingStock = true;
     InventoryUIMap::mainTable->editItem(stockItem);
 }
 
 void InventoryWindow::onCellChanged(int row, int column)
 {
     if (m_blockCellChanged) return;
-    if (!m_isEditingStock) return;
-    if (row != m_editingStockRow) return;
+    if (m_currentTable != InventoryConstants::TABLE_PRODUCTS) return;
     if (column != InventoryConstants::COL_PRODUCT_STOCK) return;
 
     QTableWidgetItem* stockItem = InventoryUIMap::mainTable->item(row, column);
-    if (!stockItem) return;
+    if (!stockItem || !(stockItem->flags() & Qt::ItemIsEditable)) return;
 
+    // Colour changes (the out-of-stock flash) also land here: only a new
+    // number is an edit.
+    const int oldStock = stockItem->data(StockQuantityRole).toInt();
     bool ok = false;
-    int newStock = stockItem->text().toInt(&ok);
-
+    const int newStock = stockItem->text().toInt(&ok);
+    auto restore = [this, stockItem, oldStock]() {
+        m_blockCellChanged = true;
+        stockItem->setText(QString::number(oldStock));
+        m_blockCellChanged = false;
+    };
     if (!ok || newStock < 0) {
-        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_STOCK_INVALID));
-        loadProducts(m_currentSearch);
-        m_isEditingStock  = false;
-        m_editingStockRow = -1;
-        InventoryUIMap::mainTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        restore();
+        AppHelpers::showWarning(this, AppHelpers::trMsg(InventoryConstants::MSG_STOCK_INVALID));
         return;
     }
+    if (newStock == oldStock) return;
 
-    int productId = getProductIdFromRow(row);
-    if (productId <= 0) return;
+    const int productId = getProductIdFromRow(row);
+    if (productId <= 0) { restore(); return; }
 
-    QSqlQuery query(m_db->database());
-    query.prepare("UPDATE products SET stock_quantity = ? WHERE id = ?");
-    query.addBindValue(newStock);
-    query.addBindValue(productId);
-
-    if (!query.exec()) {
-        qWarning() << "Failed to update stock:" << query.lastError().text();
-        AppHelpers::showError(this, tr("Failed to update stock."));
-        loadProducts(m_currentSearch);
-    } else {
-        qDebug() << "Stock updated for product" << productId << "to" << newStock;
-        if (m_notifier) {
-            m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, productId);
-        }
+    // Absolute stock write (the out-of-stock flag is recomputed with it).
+    if (!m_api->setStock(false, productId, newStock)) {
+        qWarning() << "Failed to update stock:" << m_api->lastError();
+        restore();
+        AppHelpers::showError(this, tr("Failed to update stock.\n\n") + m_api->lastError());
+        return;
     }
+    qDebug() << "Stock updated for product" << productId << "to" << newStock;
 
-    m_isEditingStock  = false;
-    m_editingStockRow = -1;
-    InventoryUIMap::mainTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    // Update this row in place: no reload, no jump.
+    m_blockCellChanged = true;
+    stockItem->setData(StockQuantityRole, newStock);
+    stockItem->setData(StockKindRole,
+                       newStock == InventoryConstants::OUT_OF_STOCK_VALUE ? QStringLiteral("out")
+                       : newStock <= InventoryConstants::LOW_STOCK_THRESHOLD ? QStringLiteral("low")
+                                                                              : QStringLiteral("normal"));
+    stockItem->setText(QString::number(newStock));
+    m_blockCellChanged = false;
+    recountStockKpis();
+    m_blockCellChanged = true;
+    applyStockColors();
+    m_blockCellChanged = false;
+    updateFlashTimer();
+
+    if (m_notifier)
+        m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, productId);
+}
+
+void InventoryWindow::recountStockKpis()
+{
+    QTableWidget* t = InventoryUIMap::mainTable;
+    if (!t) return;
+    int out = 0, low = 0;
+    for (int row = 0; row < t->rowCount(); ++row) {
+        const QTableWidgetItem* item = t->item(row, InventoryConstants::COL_PRODUCT_STOCK);
+        const QString kind = item ? item->data(StockKindRole).toString() : QString();
+        if (kind == QLatin1String("out")) ++out;
+        else if (kind == QLatin1String("low")) ++low;
+    }
+    updateKPIs(t->rowCount(), out, low);
+    updateStockFilterButtons();
 }
 
 // ===== ADD / EDIT / DELETE ROUTING =====
@@ -749,8 +1658,9 @@ void InventoryWindow::onDeleteClicked()
     int row = getSelectedRow();
     if (row < 0) return;
 
-    if (m_session && !AccessControl::canPerformAction(
-            m_session->username(), AccessControl::DeleteProduct, m_db->database())) {
+    if (m_session && !Permissions::can(
+            m_api, m_session->username(), m_session->role(),
+            AccessControl::PERMISSION_DELETE_PRODUCT)) {
         AppHelpers::showWarning(this, tr("You do not have permission to delete products."));
         return;
     }
@@ -764,22 +1674,54 @@ void InventoryWindow::onDeleteClicked()
 
 void InventoryWindow::onLogoutClicked()
 {
-    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId(), m_session->username())) {
+    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId())) {
         return;
     }
     close();
     emit logoutRequested();
 }
 
+void InventoryWindow::handleNavigation(const QString& action)
+{
+    NotificationActions::Action parsed = NotificationActions::parse(action);
+
+    AppHelpers::bringToFront(this);
+
+    // "Inventory|show" is only a focus request.
+    if (parsed.app.compare("Inventory", Qt::CaseInsensitive) != 0 ||
+        parsed.flag.compare("show", Qt::CaseInsensitive) == 0)
+        return;
+
+    // Open the Products table and filter it to the notification's stock condition.
+    if (m_currentTable != InventoryConstants::TABLE_PRODUCTS)
+        onTabClicked(InventoryConstants::TABLE_PRODUCTS);
+    InventoryUIMap::searchBox->clear();
+    m_currentSearch.clear();
+    loadCurrentTable();
+
+    if (!parsed.flag.isEmpty())
+        applyStockFilter(parsed.flag);
+}
+
+void InventoryWindow::applyStockFilter(const QString& flag)
+{
+    const bool showOut = flag.compare("out", Qt::CaseInsensitive) == 0;
+    const int minStock = m_bell
+        ? qBound(1, m_bell->manager()->settings().lowStockMin, 10)
+        : InventoryConstants::LOW_STOCK_THRESHOLD;
+    setStockFilter(showOut ? StockFilter::OutOfStock : StockFilter::LowStock,
+                   minStock);
+}
+
 // ===== PRODUCTS CRUD =====
 
 void InventoryWindow::addProduct()
 {
-    ProductDialog dialog(m_db, this);
+    ProductDialog dialog(m_api, m_images, this);
     if (dialog.exec() == QDialog::Accepted) {
         loadProducts(m_currentSearch);
         if (m_notifier) m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, -1);
-        AppHelpers::showInfo(this, tr(InventoryConstants::MSG_PRODUCT_ADD_SUCCESS));
+        AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_PRODUCT_ADD_SUCCESS));
     }
 }
 
@@ -788,11 +1730,11 @@ void InventoryWindow::editProduct(int row)
     int productId = getProductIdFromRow(row);
     if (productId <= 0) return;
 
-    ProductDialog dialog(m_db, productId, this);
+    ProductDialog dialog(m_api, m_images, productId, this);
     if (dialog.exec() == QDialog::Accepted) {
         loadProducts(m_currentSearch);
         if (m_notifier) m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, productId);
-        AppHelpers::showInfo(this, tr(InventoryConstants::MSG_PRODUCT_EDIT_SUCCESS));
+        AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_PRODUCT_EDIT_SUCCESS));
     }
 }
 
@@ -801,95 +1743,49 @@ void InventoryWindow::deleteProduct(int row)
     int productId = getProductIdFromRow(row);
     if (productId <= 0) return;
 
-    if (!AppHelpers::confirmAction(this, tr(InventoryConstants::MSG_PRODUCT_DELETE_CONFIRM))) return;
+    if (!AppHelpers::confirmAction(this, AppHelpers::trMsg(InventoryConstants::MSG_PRODUCT_DELETE_CONFIRM))) return;
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::PRODUCT_DELETE);
-    query.addBindValue(productId);
-
-    if (!query.exec()) {
-        AppHelpers::showError(this, tr("Failed to delete product: ") + query.lastError().text());
+    if (!m_api->remove("products", {{"id", productId}})) {
+        AppHelpers::showError(this, tr("Failed to delete product: ") + m_api->lastError());
         return;
     }
 
     loadProducts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, productId);
-    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_PRODUCT_DELETE_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_PRODUCT_DELETE_SUCCESS));
 }
 
 // ===== CATEGORIES CRUD =====
 
 void InventoryWindow::addCategory()
 {
-    if (m_session && !AccessControl::canPerformAction(
-            m_session->username(), AccessControl::AddCategory, m_db->database())) {
+    if (m_session && !Permissions::can(
+            m_api, m_session->username(), m_session->role(),
+            AccessControl::PERMISSION_ADD_CATEGORY)) {
         AppHelpers::showWarning(this, tr("You do not have permission to add categories."));
         return;
     }
 
-    // ── Single dialog: name + description ────────────────────────────────────
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Add Category"));
-    dlg.setFixedWidth(340);
-    dlg.setModal(true);
+    QString name;
+    QString description;
+    if (!categoryForm(this, false, name, description)) return;
 
-    QVBoxLayout* main = new QVBoxLayout(&dlg);
-    main->setContentsMargins(16, 16, 16, 16);
-    main->setSpacing(12);
+    const int categoryId = m_api->insert("categories", {
+        {"name", name},
+        {"description", description.isEmpty() ? QVariant() : description},
+        {"display_order", 0},
+        {"visible_in_retail", 1},
+        {"visible_in_cafe", 1}
+    });
 
-    QFormLayout* form = new QFormLayout();
-    form->setSpacing(8);
-
-    QLineEdit* nameEdit = new QLineEdit(&dlg);
-    nameEdit->setPlaceholderText(tr("Category name"));
-    nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow(tr("Name:"), nameEdit);
-
-    QLineEdit* descEdit = new QLineEdit(&dlg);
-    descEdit->setPlaceholderText(tr("Description (optional)"));
-    descEdit->setAlignment(Qt::AlignCenter);
-    form->addRow(tr("Description:"), descEdit);
-
-    main->addLayout(form);
-
-    QDialogButtonBox* btns = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText(tr("Add"));
-    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
-    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    main->addWidget(btns);
-
-    nameEdit->setFocus();
-
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    const QString name = nameEdit->text().trimmed();
-    if (name.isEmpty()) {
-        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_CATEGORY_NAME_EMPTY));
-        return;
-    }
-    const QString description = descEdit->text().trimmed();
-
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::CATEGORY_INSERT);
-    query.addBindValue(name);
-    query.addBindValue(description.isEmpty() ? QVariant() : QVariant(description));
-    query.addBindValue(0);
-    query.addBindValue(QVariant());
-    query.addBindValue(QVariant());
-    query.addBindValue(true);
-    query.addBindValue(true);
-
-    if (!query.exec()) {
-        AppHelpers::showError(this, tr("Failed to add category: ") + query.lastError().text());
+    if (categoryId < 0) {
+        AppHelpers::showError(this, tr("Failed to add category: ") + m_api->lastError());
         return;
     }
 
-    int categoryId = query.lastInsertId().toInt();
     loadCategories(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::CATEGORY_CHANGED, categoryId);
-    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_CATEGORY_ADD_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_CATEGORY_ADD_SUCCESS));
 }
 
 void InventoryWindow::editCategory(int row)
@@ -900,69 +1796,23 @@ void InventoryWindow::editCategory(int row)
     const QString currentName = InventoryUIMap::mainTable->item(row, InventoryConstants::COL_CATEGORY_NAME)->text();
     const QString currentDesc = InventoryUIMap::mainTable->item(row, InventoryConstants::COL_CATEGORY_DESCRIPTION)->text();
 
-    // ── Single dialog: name + description, pre-filled ────────────────────────
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Edit Category"));
-    dlg.setFixedWidth(340);
-    dlg.setModal(true);
+    QString name = currentName;
+    QString description = currentDesc;
+    if (!categoryForm(this, true, name, description)) return;
 
-    QVBoxLayout* main = new QVBoxLayout(&dlg);
-    main->setContentsMargins(16, 16, 16, 16);
-    main->setSpacing(12);
-
-    QFormLayout* form = new QFormLayout();
-    form->setSpacing(8);
-
-    QLineEdit* nameEdit = new QLineEdit(currentName, &dlg);
-    nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow(tr("Name:"), nameEdit);
-
-    QLineEdit* descEdit = new QLineEdit(currentDesc, &dlg);
-    descEdit->setPlaceholderText(tr("Description (optional)"));
-    descEdit->setAlignment(Qt::AlignCenter);
-    form->addRow(tr("Description:"), descEdit);
-
-    main->addLayout(form);
-
-    QDialogButtonBox* btns = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText(tr("Save"));
-    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
-    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    main->addWidget(btns);
-
-    nameEdit->setFocus();
-    nameEdit->selectAll();
-
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    const QString name = nameEdit->text().trimmed();
-    if (name.isEmpty()) {
-        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_CATEGORY_NAME_EMPTY));
-        return;
-    }
-    const QString description = descEdit->text().trimmed();
-
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::CATEGORY_UPDATE);
-    query.addBindValue(name);
-    query.addBindValue(description.isEmpty() ? QVariant() : QVariant(description));
-    query.addBindValue(0);
-    query.addBindValue(QVariant());
-    query.addBindValue(QVariant());
-    query.addBindValue(true);
-    query.addBindValue(true);
-    query.addBindValue(categoryId);
-
-    if (!query.exec()) {
-        AppHelpers::showError(this, tr("Failed to update category: ") + query.lastError().text());
+    // Only name + description are written: the legacy client used to reset
+    // display_order/visibility on every edit.
+    if (!m_api->update("categories",
+                       {{"name", name},
+                        {"description", description.isEmpty() ? QVariant() : description}},
+                       {{"id", categoryId}})) {
+        AppHelpers::showError(this, tr("Failed to update category: ") + m_api->lastError());
         return;
     }
 
     loadCategories(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::CATEGORY_CHANGED, categoryId);
-    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_CATEGORY_EDIT_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_CATEGORY_EDIT_SUCCESS));
 }
 
 void InventoryWindow::deleteCategory(int row)
@@ -970,12 +1820,9 @@ void InventoryWindow::deleteCategory(int row)
     int categoryId = getCategoryIdFromRow(row);
     if (categoryId <= 0) return;
 
-    QSqlQuery countQuery(m_db->database());
-    countQuery.prepare("SELECT COUNT(*) FROM products WHERE category_id = ?");
-    countQuery.addBindValue(categoryId);
-    countQuery.exec();
-    countQuery.next();
-    int count = countQuery.value(0).toInt();
+    const QList<DataRow> assigned =
+        m_api->select("products", {{"category_id", categoryId}});
+    const int count = assigned.size();
 
     QString message = count > 0
                           ? tr("This category is assigned to %1 product(s). They will become uncategorized. Continue?").arg(count)
@@ -983,140 +1830,54 @@ void InventoryWindow::deleteCategory(int row)
 
     if (!AppHelpers::confirmAction(this, message)) return;
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::CATEGORY_DELETE);
-    query.addBindValue(categoryId);
-
-    if (!query.exec()) {
-        AppHelpers::showError(this, tr("Failed to delete category: ") + query.lastError().text());
+    if (!m_api->remove("categories", {{"id", categoryId}})) {
+        AppHelpers::showError(this, tr("Failed to delete category: ") + m_api->lastError());
         return;
     }
 
     loadCategories(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::CATEGORY_CHANGED, categoryId);
-    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_CATEGORY_DELETE_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_CATEGORY_DELETE_SUCCESS));
 }
 
 // ===== DISCOUNTS CRUD =====
 
 void InventoryWindow::addDiscount()
 {
-    if (m_session && !AccessControl::canPerformAction(
-            m_session->username(), AccessControl::ManageDiscounts, m_db->database())) {
+    if (m_session && !Permissions::can(
+            m_api, m_session->username(), m_session->role(),
+            AccessControl::PERMISSION_MANAGE_DISCOUNTS)) {
         AppHelpers::showWarning(this, tr("You do not have permission to manage discounts."));
         return;
     }
 
-    // ── Single dialog: all discount fields ───────────────────────────────────
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Add Discount"));
-    dlg.setFixedWidth(360);
-    dlg.setModal(true);
+    DiscountValues values;
+    if (!discountForm(this, false, values)) return;
 
-    QVBoxLayout* main = new QVBoxLayout(&dlg);
-    main->setContentsMargins(16, 16, 16, 16);
-    main->setSpacing(12);
+    const int discountId = m_api->insert("discounts", {
+        {"name", values.name},
+        {"type", values.type},
+        {"value", values.value},
+        {"is_active", values.active ? 1 : 0},
+        {"start_date", dateValue(values.start)},
+        {"end_date", dateValue(values.end)}
+    });
 
-    QFormLayout* form = new QFormLayout();
-    form->setSpacing(8);
-
-    // Name
-    QLineEdit* nameEdit = new QLineEdit(&dlg);
-    nameEdit->setPlaceholderText(tr("Discount name"));
-    nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow(tr("Name:"), nameEdit);
-
-    // Type
-    QComboBox* typeCombo = new QComboBox(&dlg);
-    typeCombo->addItem(tr("Percentage (%)"), "percentage");
-    typeCombo->addItem(tr("Fixed Amount"),   "amount");
-    form->addRow(tr("Type:"), typeCombo);
-
-    // Value
-    QDoubleSpinBox* valueSpin = new QDoubleSpinBox(&dlg);
-    valueSpin->setMinimum(0.0);
-    valueSpin->setMaximum(9999999.0);
-    valueSpin->setDecimals(AppConstants::PRICE_DECIMALS);
-    valueSpin->setValue(0.0);
-    form->addRow(tr("Value:"), valueSpin);
-
-    // Active
-    QCheckBox* activeCheck = new QCheckBox(tr("Active"), &dlg);
-    activeCheck->setChecked(true);
-    form->addRow(tr("Status:"), activeCheck);
-
-    // Start date (optional)
-    QCheckBox* startCheck = new QCheckBox(tr("Set start date"), &dlg);
-    QDateEdit* startEdit  = new QDateEdit(QDate::currentDate(), &dlg);
-    startEdit->setCalendarPopup(true);
-    startEdit->setDisplayFormat("dd/MM/yyyy");
-    startEdit->setEnabled(false);
-    connect(startCheck, &QCheckBox::toggled, startEdit, &QDateEdit::setEnabled);
-    form->addRow(startCheck, startEdit);
-
-    // End date (optional)
-    QCheckBox* endCheck = new QCheckBox(tr("Set end date"), &dlg);
-    QDateEdit* endEdit  = new QDateEdit(QDate::currentDate(), &dlg);
-    endEdit->setCalendarPopup(true);
-    endEdit->setDisplayFormat("dd/MM/yyyy");
-    endEdit->setEnabled(false);
-    connect(endCheck, &QCheckBox::toggled, endEdit, &QDateEdit::setEnabled);
-    form->addRow(endCheck, endEdit);
-
-    main->addLayout(form);
-
-    QDialogButtonBox* btns = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText(tr("Add"));
-    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
-    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    main->addWidget(btns);
-
-    nameEdit->setFocus();
-
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    const QString name = nameEdit->text().trimmed();
-    if (name.isEmpty()) {
-        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_DISCOUNT_NAME_EMPTY));
+    if (discountId < 0) {
+        AppHelpers::showError(this, tr("Failed to add discount: ") + m_api->lastError());
         return;
     }
 
-    const QString type    = typeCombo->currentData().toString();
-    const double  value   = valueSpin->value();
-    const bool    isActive = activeCheck->isChecked();
-    const QVariant startDate = startCheck->isChecked()
-                                   ? QVariant(startEdit->date().toString("yyyy-MM-dd"))
-                                   : QVariant();
-    const QVariant endDate   = endCheck->isChecked()
-                                 ? QVariant(endEdit->date().toString("yyyy-MM-dd"))
-                                 : QVariant();
-
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::DISCOUNT_INSERT);
-    query.addBindValue(name);
-    query.addBindValue(type);
-    query.addBindValue(value);
-    query.addBindValue(isActive ? 1 : 0);
-    query.addBindValue(startDate);
-    query.addBindValue(endDate);
-
-    if (!query.exec()) {
-        AppHelpers::showError(this, tr("Failed to add discount: ") + query.lastError().text());
-        return;
-    }
-
-    int discountId = query.lastInsertId().toInt();
     loadDiscounts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::DISCOUNT_CHANGED, discountId);
-    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_DISCOUNT_ADD_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_DISCOUNT_ADD_SUCCESS));
 }
 
 void InventoryWindow::editDiscount(int row)
 {
-    if (m_session && !AccessControl::canPerformAction(
-            m_session->username(), AccessControl::ManageDiscounts, m_db->database())) {
+    if (m_session && !Permissions::can(
+            m_api, m_session->username(), m_session->role(),
+            AccessControl::PERMISSION_MANAGE_DISCOUNTS)) {
         AppHelpers::showWarning(this, tr("You do not have permission to manage discounts."));
         return;
     }
@@ -1124,148 +1885,50 @@ void InventoryWindow::editDiscount(int row)
     int discountId = getDiscountIdFromRow(row);
     if (discountId <= 0) return;
 
-    // Load current values from DB
-    QSqlQuery loadQuery(m_db->database());
-    loadQuery.prepare(
-        "SELECT name, type, value, is_active, start_date, end_date "
-        "FROM discounts WHERE id = ?");
-    loadQuery.addBindValue(discountId);
-    if (!loadQuery.exec() || !loadQuery.next()) return;
+    // Load current values from the database
+    const QList<DataRow> loadRows =
+        m_api->select("discounts", {{"id", discountId}});
+    if (loadRows.isEmpty()) return;
+    const DataRow& saved = loadRows.first();
 
-    const QString savedName      = loadQuery.value("name").toString();
-    const QString savedType      = loadQuery.value("type").toString();
-    const double  savedValue     = loadQuery.value("value").toDouble();
-    const bool    savedActive    = loadQuery.value("is_active").toBool();
-    const QString savedStartDate = loadQuery.value("start_date").toString();
-    const QString savedEndDate   = loadQuery.value("end_date").toString();
+    const QString savedName      = saved.value("name").toString();
+    const QString savedType      = saved.value("type").toString();
+    const double  savedValue     = saved.value("value").toDouble();
+    const bool    savedActive    = saved.value("is_active").toInt() != 0;
+    const QString savedStartDate = saved.value("start_date").toString();
+    const QString savedEndDate   = saved.value("end_date").toString();
 
-    // ── Single dialog: all fields pre-filled ─────────────────────────────────
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Edit Discount"));
-    dlg.setFixedWidth(360);
-    dlg.setModal(true);
+    DiscountValues values;
+    values.name = savedName;
+    values.type = savedType;
+    values.value = savedValue;
+    values.active = savedActive;
+    values.start = QDate::fromString(savedStartDate, "yyyy-MM-dd");
+    values.end = QDate::fromString(savedEndDate, "yyyy-MM-dd");
+    if (!discountForm(this, true, values)) return;
 
-    QVBoxLayout* main = new QVBoxLayout(&dlg);
-    main->setContentsMargins(16, 16, 16, 16);
-    main->setSpacing(12);
-
-    QFormLayout* form = new QFormLayout();
-    form->setSpacing(8);
-
-    // Name
-    QLineEdit* nameEdit = new QLineEdit(savedName, &dlg);
-    nameEdit->setAlignment(Qt::AlignCenter);
-    form->addRow(tr("Name:"), nameEdit);
-
-    // Type
-    QComboBox* typeCombo = new QComboBox(&dlg);
-    typeCombo->addItem(tr("Percentage (%)"), "percentage");
-    typeCombo->addItem(tr("Fixed Amount"),   "amount");
-    typeCombo->setCurrentIndex(savedType == "percentage" ? 0 : 1);
-    form->addRow(tr("Type:"), typeCombo);
-
-    // Value
-    QDoubleSpinBox* valueSpin = new QDoubleSpinBox(&dlg);
-    valueSpin->setMinimum(0.0);
-    valueSpin->setMaximum(9999999.0);
-    valueSpin->setDecimals(AppConstants::PRICE_DECIMALS);
-    valueSpin->setValue(savedValue);
-    form->addRow(tr("Value:"), valueSpin);
-
-    // Active
-    QCheckBox* activeCheck = new QCheckBox(tr("Active"), &dlg);
-    activeCheck->setChecked(savedActive);
-    form->addRow(tr("Status:"), activeCheck);
-
-    // Start date (optional — pre-fill if saved)
-    QCheckBox* startCheck = new QCheckBox(tr("Set start date"), &dlg);
-    QDateEdit* startEdit  = new QDateEdit(&dlg);
-    startEdit->setCalendarPopup(true);
-    startEdit->setDisplayFormat("dd/MM/yyyy");
-    if (!savedStartDate.isEmpty()) {
-        startCheck->setChecked(true);
-        startEdit->setDate(QDate::fromString(savedStartDate, "yyyy-MM-dd"));
-        startEdit->setEnabled(true);
-    } else {
-        startCheck->setChecked(false);
-        startEdit->setDate(QDate::currentDate());
-        startEdit->setEnabled(false);
-    }
-    connect(startCheck, &QCheckBox::toggled, startEdit, &QDateEdit::setEnabled);
-    form->addRow(startCheck, startEdit);
-
-    // End date (optional — pre-fill if saved)
-    QCheckBox* endCheck = new QCheckBox(tr("Set end date"), &dlg);
-    QDateEdit* endEdit  = new QDateEdit(&dlg);
-    endEdit->setCalendarPopup(true);
-    endEdit->setDisplayFormat("dd/MM/yyyy");
-    if (!savedEndDate.isEmpty()) {
-        endCheck->setChecked(true);
-        endEdit->setDate(QDate::fromString(savedEndDate, "yyyy-MM-dd"));
-        endEdit->setEnabled(true);
-    } else {
-        endCheck->setChecked(false);
-        endEdit->setDate(QDate::currentDate());
-        endEdit->setEnabled(false);
-    }
-    connect(endCheck, &QCheckBox::toggled, endEdit, &QDateEdit::setEnabled);
-    form->addRow(endCheck, endEdit);
-
-    main->addLayout(form);
-
-    QDialogButtonBox* btns = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    btns->button(QDialogButtonBox::Ok)->setText(tr("Save"));
-    btns->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
-    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    main->addWidget(btns);
-
-    nameEdit->setFocus();
-    nameEdit->selectAll();
-
-    if (dlg.exec() != QDialog::Accepted) return;
-
-    const QString name = nameEdit->text().trimmed();
-    if (name.isEmpty()) {
-        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_DISCOUNT_NAME_EMPTY));
-        return;
-    }
-
-    const QString type     = typeCombo->currentData().toString();
-    const double  value    = valueSpin->value();
-    const bool    isActive = activeCheck->isChecked();
-    const QVariant startDate = startCheck->isChecked()
-                                   ? QVariant(startEdit->date().toString("yyyy-MM-dd"))
-                                   : QVariant();
-    const QVariant endDate   = endCheck->isChecked()
-                                 ? QVariant(endEdit->date().toString("yyyy-MM-dd"))
-                                 : QVariant();
-
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::DISCOUNT_UPDATE);
-    query.addBindValue(name);
-    query.addBindValue(type);
-    query.addBindValue(value);
-    query.addBindValue(isActive ? 1 : 0);
-    query.addBindValue(startDate);
-    query.addBindValue(endDate);
-    query.addBindValue(discountId);
-
-    if (!query.exec()) {
-        AppHelpers::showError(this, tr("Failed to update discount: ") + query.lastError().text());
+    if (!m_api->update("discounts",
+                       {{"name", values.name},
+                        {"type", values.type},
+                        {"value", values.value},
+                        {"is_active", values.active ? 1 : 0},
+                        {"start_date", dateValue(values.start)},
+                        {"end_date", dateValue(values.end)}},
+                       {{"id", discountId}})) {
+        AppHelpers::showError(this, tr("Failed to update discount: ") + m_api->lastError());
         return;
     }
 
     loadDiscounts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::DISCOUNT_CHANGED, discountId);
-    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_DISCOUNT_EDIT_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_DISCOUNT_EDIT_SUCCESS));
 }
 
 void InventoryWindow::deleteDiscount(int row)
 {
-    if (m_session && !AccessControl::canPerformAction(
-            m_session->username(), AccessControl::ManageDiscounts, m_db->database())) {
+    if (m_session && !Permissions::can(
+            m_api, m_session->username(), m_session->role(),
+            AccessControl::PERMISSION_MANAGE_DISCOUNTS)) {
         AppHelpers::showWarning(this, tr("You do not have permission to manage discounts."));
         return;
     }
@@ -1273,20 +1936,16 @@ void InventoryWindow::deleteDiscount(int row)
     int discountId = getDiscountIdFromRow(row);
     if (discountId <= 0) return;
 
-    if (!AppHelpers::confirmAction(this, tr(InventoryConstants::MSG_DISCOUNT_DELETE_CONFIRM))) return;
+    if (!AppHelpers::confirmAction(this, AppHelpers::trMsg(InventoryConstants::MSG_DISCOUNT_DELETE_CONFIRM))) return;
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::DISCOUNT_DELETE);
-    query.addBindValue(discountId);
-
-    if (!query.exec()) {
-        AppHelpers::showError(this, tr("Failed to delete discount: ") + query.lastError().text());
+    if (!m_api->remove("discounts", {{"id", discountId}})) {
+        AppHelpers::showError(this, tr("Failed to delete discount: ") + m_api->lastError());
         return;
     }
 
     loadDiscounts(m_currentSearch);
     if (m_notifier) m_notifier->notifyChange(ChangeType::DISCOUNT_CHANGED, discountId);
-    AppHelpers::showInfo(this, tr(InventoryConstants::MSG_DISCOUNT_DELETE_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(InventoryConstants::MSG_DISCOUNT_DELETE_SUCCESS));
 }
 
 // ===== HELPERS =====

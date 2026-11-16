@@ -1,317 +1,441 @@
 #include "VariantsDialog.h"
-#include "ui_Variantsdialog.h"
 #include "InventoryConstants.h"
-#include "DatabaseManager.h"
-#include "QueryRepository.h"
-#include "StyleManager.h"
+#include "LocalApi.h"
 #include "Prefixes.h"
-#include <QSqlQuery>
-#include <QSqlError>
 #include <QHBoxLayout>
-#include <QVBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QIcon>
+#include <QFrame>
+#include <QScrollArea>
+#include <QVBoxLayout>
 #include <QIntValidator>
-#include <QRegularExpression>
+#include <QSignalBlocker>
 #include <QStyle>
-#include <QSizePolicy>
+#include <QTimer>
+#include <QEvent>
 #include <QDebug>
 
 // ===== HELPERS =====
 
-static QString stripCurrency(const QString& text)
-{
-    QString result = text.trimmed();
-    // Remove trailing currency code (e.g. " TND", " USD", etc.)
-    static QRegularExpression rx("\\s+\\S+$");
-    result.remove(rx);
-    return result;
+namespace {
+constexpr int DialogWidth = 620;
+constexpr int MaxListHeight = 440;
 }
 
-static void connectCurrencyFormat(QLineEdit* edit, QWidget* parent)
+static QString stripCurrency(const QString& text)
 {
-    QObject::connect(edit, &QLineEdit::editingFinished, [edit]() {
-        bool ok;
-        double val = stripCurrency(edit->text()).toDouble(&ok);
-        if (ok && val > 0)
-            edit->setText(AppHelpers::formatPrice(val));
+    QString result = text;
+    result.remove(QString(" ") + AppConstants::CURRENCY, Qt::CaseInsensitive);
+    return result.replace(',', '.').trimmed();
+}
+
+static void connectNumberFormat(QLineEdit* edit)
+{
+    QObject::connect(edit, &QLineEdit::editingFinished, edit, [edit]() {
+        const QString raw = stripCurrency(edit->text());
+        if (raw.isEmpty()) return;
+        bool ok = false;
+        const double val = raw.toDouble(&ok);
+        if (ok) edit->setText(QString::number(val, 'f', AppConstants::PRICE_DECIMALS));
     });
 }
 
-static QString currencyText(double val)
+static QString amountText(double val)
 {
-    return val > 0 ? AppHelpers::formatPrice(val) : QString();
+    return val > 0 ? QString::number(val, 'f', AppConstants::PRICE_DECIMALS) : QString();
+}
+
+// Row labels show the parsed value of the raw text, blank when unparseable.
+static QString priceDisplay(const QString& raw)
+{
+    bool ok = false;
+    const double v = stripCurrency(raw).toDouble(&ok);
+    return ok && v > 0 ? AppHelpers::formatPrice(v) : QString();
+}
+
+static void repolish(QWidget* w)
+{
+    w->style()->unpolish(w);
+    w->style()->polish(w);
 }
 
 // ===== CONSTRUCTOR =====
 
-VariantsDialog::VariantsDialog(DatabaseManager* db,
+VariantsDialog::VariantsDialog(LocalApi* api,
                                const QList<PendingVariant>& pending,
                                int productId,
                                bool isService,
+                               const QString& productName,
                                QWidget* parent)
-    : QDialog(parent)
-    , ui(new Ui::VarDialog)
-    , m_db(db)
+    : ModernDialog(Look::Band, "grid", Tone::Accent, tr("Manage variants"), QString(), DialogWidth, parent)
+    , m_api(api)
     , m_productId(productId)
     , m_isService(isService)
+    , m_productName(productName)
 {
-    ui->setupUi(this);
+    setWindowTitle(tr("Manage Variants"));
     setupUI();
     setupConnections();
-
-    // Register the static .ui row as m_rows[0] (locked, cannot be deleted)
-    registerStaticRow();
-
-    if (m_isService) {
-        ui->varStockLabel->setEnabled(false);
-        ui->varStockEdit->setEnabled(false);
-        ui->varStockEdit->setText("0");
-    } else {
-        ui->varStockLabel->setText(tr("Stock"));
-    }
 
     if (!pending.isEmpty()) {
         populateFromPending(pending);
     } else if (m_productId > 0) {
         loadExistingVariants();
     }
-    // Add mode with no pending data: static row is empty and ready to fill
-}
+    // No data yet: one empty row, ready to fill.
+    if (m_rows.isEmpty()) {
+        VariantRow row;
+        row.stockText = QStringLiteral("0");
+        appendRow(row);
+    }
 
-VariantsDialog::~VariantsDialog()
-{
-    delete ui;
+    selectRow(0);
 }
 
 // ===== SETUP =====
 
 void VariantsDialog::setupUI()
 {
-    setWindowTitle(tr("Manage Variants"));
-    setWindowFlags(windowFlags() & ~Qt::WindowContextHelpButtonHint);
+    m_listWidget = new QWidget;
+    m_listWidget->setObjectName("variantRows");
+    m_listLayout = new QVBoxLayout(m_listWidget);
+    m_listLayout->setContentsMargins(0, 0, 0, 0);
+    m_listLayout->setSpacing(8);
+    m_listLayout->addStretch(1);
 
-    ui->varNameLabel->setText(tr("Name"));
-    ui->varCostLabel->setText(tr("Cost"));
-    ui->varPriceLabel->setText(tr("Price"));
-    ui->varAddBtn->setText(tr("+ Add Variant"));
+    m_scroll = new QScrollArea(this);
+    m_scroll->setObjectName("variantScroll");
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setWidget(m_listWidget);
+    body()->addWidget(m_scroll);
 
-    ui->varbuttonBox->button(QDialogButtonBox::Ok)->setText(tr("Save"));
-    ui->varbuttonBox->button(QDialogButtonBox::Cancel)->setText(tr("Cancel"));
+    m_editor = buildEditor();
+
+    QPushButton* addBtn = quietButton(tr("Add variant"), "plus");
+    connect(addBtn, &QPushButton::clicked, this, &VariantsDialog::onAddVariant);
+    body()->addWidget(addBtn);
+
+    QPushButton* save = addFooter(tr("Save Variants"), "check", "add");
+    connect(save, &QPushButton::clicked, this, &VariantsDialog::onAccepted);
+}
+
+// The fields of the open row. One set, moved to whichever row is open.
+QWidget* VariantsDialog::buildEditor()
+{
+    auto* editor = new QWidget;
+    editor->setObjectName("variantEditor");
+    auto* layout = new QVBoxLayout(editor);
+    layout->setContentsMargins(14, 0, 14, 12);
+    layout->setSpacing(10);
+
+    const auto column = [editor](const QString& text, QWidget* field) {
+        auto* box = new QWidget(editor);
+        auto* boxLayout = new QVBoxLayout(box);
+        boxLayout->setContentsMargins(0, 0, 0, 0);
+        boxLayout->setSpacing(5);
+        auto* caption = new QLabel(text, box);
+        caption->setObjectName("modalFieldLabel");
+        boxLayout->addWidget(caption);
+        boxLayout->addWidget(field);
+        return box;
+    };
+
+    m_nameEdit = new QLineEdit(editor);
+    m_nameEdit->setPlaceholderText(tr("Variant name"));
+    m_costEdit = moneyEdit(editor);
+    m_priceEdit = moneyEdit(editor);
+    m_stockEdit = new QLineEdit(editor);
+    m_stockEdit->setPlaceholderText("0");
+    m_stockEdit->setValidator(new QIntValidator(0, 999999, this));
+    connectNumberFormat(m_costEdit);
+    connectNumberFormat(m_priceEdit);
+
+    auto* fields = new QHBoxLayout;
+    fields->setSpacing(8);
+    fields->addWidget(column(tr("Name"), m_nameEdit), 1);
+    fields->addWidget(column(tr("Cost"), m_costEdit), 1);
+    fields->addWidget(column(tr("Price"), m_priceEdit), 1);
+    // A service has no stock: the field is hidden entirely (not disabled).
+    m_stockColumn = column(tr("Stock"), m_stockEdit);
+    m_stockColumn->setVisible(!m_isService);
+    fields->addWidget(m_stockColumn, 1);
+    layout->addLayout(fields);
+
+    auto* bottom = new QHBoxLayout;
+    QLabel* marginCaption = nullptr;
+    QFrame* strip = resultStrip(&marginCaption, &m_marginValue);
+    marginCaption->setText(tr("Margin"));
+    m_deleteBtn = quietButton(tr("Delete variant"), "trash");
+    bottom->addWidget(strip, 1);
+    bottom->addWidget(m_deleteBtn);
+    layout->addLayout(bottom);
+    return editor;
 }
 
 void VariantsDialog::setupConnections()
 {
-    connect(ui->varAddBtn, &QPushButton::clicked,
-            this, &VariantsDialog::onAddVariantRow);
-    connect(ui->varbuttonBox, &QDialogButtonBox::accepted,
-            this, &VariantsDialog::onAccepted);
-    connect(ui->varbuttonBox, &QDialogButtonBox::rejected,
-            this, &VariantsDialog::onRejected);
+    connect(m_deleteBtn, &QPushButton::clicked,
+            this, &VariantsDialog::onDeleteVariant);
+
+    // Detail edits flow straight into the selected row (raw text is the
+    // source of truth; parsing happens on save).
+    connect(m_nameEdit,  &QLineEdit::textChanged,
+            this, &VariantsDialog::onDetailEdited);
+    connect(m_costEdit,  &QLineEdit::textChanged,
+            this, &VariantsDialog::onDetailEdited);
+    connect(m_priceEdit, &QLineEdit::textChanged,
+            this, &VariantsDialog::onDetailEdited);
+    connect(m_stockEdit, &QLineEdit::textChanged,
+            this, &VariantsDialog::onDetailEdited);
 }
 
 // ===== ROW MANAGEMENT =====
 
-void VariantsDialog::registerStaticRow()
-{
-    VariantRow row;
-    row.variantId  = -1;
-    row.nameLabel  = ui->varNameLabel;
-    row.nameEdit   = ui->varNameEdit;
-    row.costLabel  = ui->varCostLabel;
-    row.costEdit   = ui->varCostEdit;
-    row.priceLabel = ui->varPriceLabel;
-    row.priceEdit  = ui->varPriceEdit;
-    row.stockLabel = ui->varStockLabel;
-    row.stockEdit  = ui->varStockEdit;
-    row.deleteBtn  = ui->deleteVarBtn;
-    row.layout     = nullptr; // owned by the .ui
-
-    ui->varNameEdit->setPlaceholderText(tr("Variant name"));
-    ui->varCostEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
-    ui->varPriceEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
-    ui->varStockEdit->setPlaceholderText("0");
-
-    connectCurrencyFormat(ui->varCostEdit, this);
-    connectCurrencyFormat(ui->varPriceEdit, this);
-
-    styleDeleteButton(ui->deleteVarBtn, false);
-
-    // Apply matching layout settings to the static .ui row
-    ui->horizontalLayout->setContentsMargins(0, 0, 0, 0);
-    ui->horizontalLayout->setSpacing(6);
-    ui->horizontalLayout->setStretch(0, 0); // varNameLabel
-    ui->horizontalLayout->setStretch(1, 1); // varNameEdit
-    ui->horizontalLayout->setStretch(2, 0); // varCostLabel
-    ui->horizontalLayout->setStretch(3, 1); // varCostEdit
-    ui->horizontalLayout->setStretch(4, 0); // varPriceLabel
-    ui->horizontalLayout->setStretch(5, 1); // varPriceEdit
-    ui->horizontalLayout->setStretch(6, 0); // varStockLabel
-    ui->horizontalLayout->setStretch(7, 1); // varStockEdit
-    ui->horizontalLayout->setStretch(8, 0); // deleteVarBtn
-
-    m_rows.append(row);
-}
-
-void VariantsDialog::styleDeleteButton(QPushButton* btn, bool enabled)
-{
-    btn->setText("");
-    btn->setProperty("btnStyle", "variantDelete");
-    btn->setEnabled(enabled);
-    btn->setIcon(QIcon(StyleManager::iconPath("delete")));
-    btn->setIconSize(QSize(16, 16));
-    btn->style()->unpolish(btn);
-    btn->style()->polish(btn);
-    btn->update();
-}
-
 void VariantsDialog::loadExistingVariants()
 {
-    if (!m_db || m_productId <= 0) return;
+    if (!m_api || m_productId <= 0) return;
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::VARIANT_SELECT_BY_PRODUCT);
-    query.addBindValue(m_productId);
-
-    if (!query.exec()) {
-        qWarning() << "Failed to load variants:" << query.lastError().text();
+    const QList<DataRow> rows = m_api->variants(m_productId);
+    if (!m_api->ok()) {
+        qWarning() << "Failed to load variants:" << m_api->lastError();
         return;
     }
 
-    bool first = true;
-    while (query.next()) {
-        int     id    = query.value("id").toInt();
-        QString name  = query.value("variant_name").toString();
-        double  cost  = query.value("cost").toDouble();
-        double  price = query.value("price").toDouble();
-        int     stock = query.value("stock").toInt();
-
-        if (first) {
-            m_rows[0].variantId = id;
-            ui->varNameEdit->setText(name);
-            ui->varCostEdit->setText(currencyText(cost));
-            ui->varPriceEdit->setText(currencyText(price));
-            ui->varStockEdit->setText(QString::number(stock));
-            first = false;
-        } else {
-            addVariantRow(id, name, cost, price, stock);
-        }
+    for (const DataRow& v : rows) {
+        VariantRow row;
+        row.variantId = v.value("id").toInt();
+        row.nameText  = v.value("variant_name").toString();
+        row.costText  = amountText(v.value("cost").toDouble());
+        row.priceText = amountText(v.value("price").toDouble());
+        row.stockText = QString::number(v.value("stock").toInt());
+        appendRow(row);
     }
 }
 
 void VariantsDialog::populateFromPending(const QList<PendingVariant>& pending)
 {
-    if (pending.isEmpty()) return;
-
-    const PendingVariant& first = pending[0];
-    m_rows[0].variantId = first.variantId;
-    ui->varNameEdit->setText(first.name);
-    ui->varCostEdit->setText(currencyText(first.cost));
-    ui->varPriceEdit->setText(currencyText(first.price));
-    ui->varStockEdit->setText(QString::number(first.stock));
-
-    for (int i = 1; i < pending.size(); ++i) {
-        const PendingVariant& pv = pending[i];
-        addVariantRow(pv.variantId, pv.name, pv.cost, pv.price, pv.stock);
+    for (const PendingVariant& pv : pending) {
+        VariantRow row;
+        row.variantId = pv.variantId;
+        row.nameText  = pv.name;
+        row.costText  = amountText(pv.cost);
+        row.priceText = amountText(pv.price);
+        row.stockText = QString::number(pv.stock);
+        appendRow(row);
     }
 }
 
-void VariantsDialog::addVariantRow(int variantId, const QString& name, double cost, double price, int stock)
+void VariantsDialog::appendRow(const VariantRow& row)
+{
+    VariantRow r = row;
+
+    r.container = new QFrame(m_listWidget);
+    r.container->setObjectName("variantRow");
+    r.container->show();
+    auto* rowLayout = new QVBoxLayout(r.container);
+    rowLayout->setContentsMargins(0, 0, 0, 0);
+    rowLayout->setSpacing(0);
+
+    r.header = new QWidget(r.container);
+    r.header->setCursor(Qt::PointingHandCursor);
+    r.header->setFixedHeight(50);
+    auto* headerLayout = new QHBoxLayout(r.header);
+    headerLayout->setContentsMargins(14, 0, 14, 0);
+    headerLayout->setSpacing(10);
+
+    r.nameLabel = new QLabel(r.header);
+    r.nameLabel->setObjectName("modalChoiceTitle");
+    r.priceLabel = new QLabel(r.header);
+    r.priceLabel->setObjectName("discountLineValue");
+    r.stockLabel = new QLabel(r.header);
+    r.stockLabel->setObjectName("variantStock");
+    r.stockLabel->setVisible(!m_isService);
+
+    // Rows are click-to-select; the labels must not eat the press.
+    for (QLabel* label : {r.nameLabel, r.priceLabel, r.stockLabel})
+        label->setAttribute(Qt::WA_TransparentForMouseEvents);
+
+    headerLayout->addWidget(r.nameLabel, 1);
+    headerLayout->addWidget(r.priceLabel);
+    headerLayout->addWidget(r.stockLabel);
+    rowLayout->addWidget(r.header);
+
+    r.header->installEventFilter(this);
+
+    m_listLayout->insertWidget(m_rows.size(), r.container);
+    updateRowLabels(r);
+
+    m_rows.append(r);
+    updateSubtitle();
+}
+
+void VariantsDialog::updateRowLabels(VariantRow& row)
+{
+    row.nameLabel->setText(row.nameText.trimmed().isEmpty() ? tr("New variant") : row.nameText);
+    row.nameLabel->setEnabled(!row.nameText.trimmed().isEmpty());
+    row.priceLabel->setText(priceDisplay(row.priceText));
+    const int stock = row.stockText.toInt();
+    row.stockLabel->setText(tr("%1 left").arg(stock));
+    row.stockLabel->setProperty("level", stock <= 0 ? "out" : stock <= 3 ? "low" : "ok");
+    repolish(row.stockLabel);
+}
+
+void VariantsDialog::removeRowAt(int index)
+{
+    if (index < 0 || index >= m_rows.size()) return;
+
+    // The shared editor must not go down with its row.
+    m_editor->setParent(nullptr);
+    m_editor->hide();
+
+    delete m_rows[index].container; // also removes it from the layout
+    m_rows.removeAt(index);
+    m_selected = -1;
+
+    updateSubtitle();
+
+    if (m_rows.isEmpty()) {
+        clearDetail();
+        updateListHeight();
+        return;
+    }
+    selectRow(qMin(index, int(m_rows.size()) - 1));
+}
+
+void VariantsDialog::selectRow(int index)
+{
+    if (index < 0 || index >= m_rows.size()) return;
+
+    if (m_selected >= 0 && m_selected < m_rows.size()) {
+        m_rows[m_selected].container->setProperty("rowState", QVariant());
+        repolish(m_rows[m_selected].container);
+    }
+
+    m_selected = index;
+    VariantRow& row = m_rows[index];
+    row.container->setProperty("rowState", "selected");
+    repolish(row.container);
+
+    static_cast<QVBoxLayout*>(row.container->layout())->addWidget(m_editor);
+    m_editor->show();
+
+    m_nameEdit->setEnabled(true);
+    m_costEdit->setEnabled(true);
+    m_priceEdit->setEnabled(true);
+    m_stockEdit->setEnabled(true);
+    m_deleteBtn->setEnabled(true);
+
+    // Block signals: setText() would fire textChanged → onDetailEdited, which
+    // copies the not-yet-updated sibling fields back over the row's raw text.
+    {
+        const QSignalBlocker b1(m_nameEdit), b2(m_costEdit),
+                             b3(m_priceEdit), b4(m_stockEdit);
+        m_nameEdit->setText(row.nameText);
+        m_costEdit->setText(row.costText);
+        m_priceEdit->setText(row.priceText);
+        m_stockEdit->setText(row.stockText);
+    }
+
+    refreshDetailChip();
+    updateListHeight();
+    m_scroll->ensureWidgetVisible(row.container, 0, 8);
+    m_nameEdit->setFocus(Qt::OtherFocusReason);
+    // Qt delivers the deferred pre-show focus with TabFocusReason, which makes
+    // the line edit select-all; a plain cursor at the end is nicer.
+    QTimer::singleShot(0, m_nameEdit, [this] { m_nameEdit->deselect(); });
+}
+
+// The list takes the room it needs, then scrolls.
+void VariantsDialog::updateListHeight()
+{
+    constexpr int HeaderAndBorder = 52;
+    int height = int(m_rows.size()) * HeaderAndBorder
+                 + qMax(0, int(m_rows.size()) - 1) * m_listLayout->spacing();
+    if (m_selected >= 0)
+        height += m_editor->sizeHint().height();
+    m_scroll->setFixedHeight(qMin(height, MaxListHeight));
+}
+
+// The editor's size is only known once everything is on screen.
+void VariantsDialog::showEvent(QShowEvent* event)
+{
+    ModernDialog::showEvent(event);
+    updateListHeight();
+}
+
+void VariantsDialog::clearDetail()
+{
+    m_selected = -1;
+    m_nameEdit->clear();
+    m_costEdit->clear();
+    m_priceEdit->clear();
+    m_stockEdit->clear();
+    m_editor->hide();
+}
+
+void VariantsDialog::updateSubtitle()
+{
+    const QString base = m_productName.isEmpty() ? tr("New product")
+                                                 : m_productName;
+    const int n = m_rows.size();
+    // Whole sentences, so every language can word its own plural.
+    setSubtitle(n == 1 ? tr("%1  ·  1 variant").arg(base)
+                       : tr("%1  ·  %2 variants").arg(base).arg(n));
+}
+
+// ===== SLOTS =====
+
+void VariantsDialog::onAddVariant()
 {
     VariantRow row;
-    row.variantId = variantId;
-
-    row.nameLabel  = new QLabel(tr("Name"),  this);
-    row.costLabel  = new QLabel(tr("Cost"),  this);
-    row.priceLabel = new QLabel(tr("Price"), this);
-    row.stockLabel = new QLabel(tr("Stock"), this);
-
-    row.nameEdit = new QLineEdit(name, this);
-    row.nameEdit->setPlaceholderText(tr("Variant name"));
-
-    row.costEdit = new QLineEdit(currencyText(cost), this);
-    row.costEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
-    connectCurrencyFormat(row.costEdit, this);
-
-    row.priceEdit = new QLineEdit(currencyText(price), this);
-    row.priceEdit->setPlaceholderText(QString("0.%1").arg(QString(AppConstants::PRICE_DECIMALS, '0')));
-    connectCurrencyFormat(row.priceEdit, this);
-
-    row.stockEdit = new QLineEdit(QString::number(stock), this);
-    row.stockEdit->setPlaceholderText("0");
-    row.stockEdit->setValidator(new QIntValidator(0, 999999, this));
-    if (m_isService) {
-        row.stockLabel->setEnabled(false);
-        row.stockEdit->setEnabled(false);
-        row.stockEdit->setText("0");
-    }
-
-    row.deleteBtn = new QPushButton(this);
-    row.deleteBtn->setToolTip(tr("Remove variant"));
-    styleDeleteButton(row.deleteBtn, true);
-
-    connect(row.deleteBtn, &QPushButton::clicked, this, &VariantsDialog::onDeleteVariantRow);
-
-    row.layout = new QHBoxLayout();
-    row.layout->setContentsMargins(0, 0, 0, 0);
-    row.layout->setSpacing(6);
-    row.layout->addWidget(row.nameLabel,  0); // stretch 0
-    row.layout->addWidget(row.nameEdit,   1); // stretch 1
-    row.layout->addWidget(row.costLabel,  0); // stretch 0
-    row.layout->addWidget(row.costEdit,   1); // stretch 1
-    row.layout->addWidget(row.priceLabel, 0); // stretch 0
-    row.layout->addWidget(row.priceEdit,  1); // stretch 1
-    row.layout->addWidget(row.stockLabel, 0); // stretch 0
-    row.layout->addWidget(row.stockEdit,  1); // stretch 1
-    row.layout->addWidget(row.deleteBtn,  0); // stretch 0
-
-    // Insert after all existing rows, before varAddBtn
-    int insertIndex = m_rows.size();
-    ui->verticalLayout->insertLayout(insertIndex, row.layout);
-
-    m_rows.append(row);
+    row.stockText = QStringLiteral("0");
+    appendRow(row);
+    selectRow(m_rows.size() - 1);
 }
 
-void VariantsDialog::onAddVariantRow()
+void VariantsDialog::onDeleteVariant()
 {
-    addVariantRow();
+    if (m_selected < 0 || m_selected >= m_rows.size()) return;
+    removeRowAt(m_selected);
 }
 
-void VariantsDialog::onDeleteVariantRow()
+void VariantsDialog::onDetailEdited()
 {
-    QPushButton* btn = qobject_cast<QPushButton*>(sender());
-    if (!btn) return;
+    if (m_selected < 0 || m_selected >= m_rows.size()) return;
 
-    // Start from index 1 — index 0 is the locked static row
-    for (int i = 1; i < m_rows.size(); ++i) {
-        if (m_rows[i].deleteBtn == btn) {
-            removeVariantRow(i);
-            return;
-        }
-    }
+    VariantRow& row = m_rows[m_selected];
+    row.nameText  = m_nameEdit->text();
+    row.costText  = m_costEdit->text();
+    row.priceText = m_priceEdit->text();
+    row.stockText = m_stockEdit->text();
+
+    updateRowLabels(row);
+    refreshDetailChip();
 }
 
-void VariantsDialog::removeVariantRow(int index)
+// Live margin, same format as the product window.
+void VariantsDialog::refreshDetailChip()
 {
-    if (index <= 0 || index >= m_rows.size()) return; // 0 is locked
+    bool costOk = false, priceOk = false;
+    const double cost  = stripCurrency(m_costEdit->text()).toDouble(&costOk);
+    const double price = stripCurrency(m_priceEdit->text()).toDouble(&priceOk);
 
-    VariantRow& row = m_rows[index];
-
-    QLayoutItem* item;
-    while ((item = row.layout->takeAt(0)) != nullptr) {
-        delete item->widget();
-        delete item;
+    if (!costOk || !priceOk || price <= 0.0) {
+        m_marginValue->setText("-");
+        m_marginValue->setProperty("loss", false);
+    } else {
+        const double delta = price - cost;
+        m_marginValue->setProperty("loss", delta < 0.0);
+        m_marginValue->setText(QString("%1%  ·  %2%3")
+                                   .arg(delta / price * 100.0, 0, 'f', 1)
+                                   .arg(delta >= 0 ? QStringLiteral("+") : QString())
+                                   .arg(delta, 0, 'f', AppConstants::PRICE_DECIMALS));
     }
-
-    ui->verticalLayout->removeItem(row.layout);
-    delete row.layout;
-
-    m_rows.removeAt(index);
+    repolish(m_marginValue);
 }
-
-// ===== ACCEPT / REJECT =====
 
 void VariantsDialog::onAccepted()
 {
@@ -320,15 +444,25 @@ void VariantsDialog::onAccepted()
     }
 }
 
-void VariantsDialog::onRejected()
+bool VariantsDialog::eventFilter(QObject* obj, QEvent* event)
 {
-    reject();
+    if (event->type() == QEvent::MouseButtonPress) {
+        for (int i = 0; i < m_rows.size(); ++i) {
+            if (m_rows[i].header == obj) {
+                selectRow(i);
+                return true;
+            }
+        }
+    }
+    return ModernDialog::eventFilter(obj, event);
 }
+
+// ===== ACCEPT =====
 
 bool VariantsDialog::validateAndCollect()
 {
     if (m_rows.isEmpty()) {
-        AppHelpers::showWarning(this, tr(InventoryConstants::MSG_VARIANT_NO_VARIANTS));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(InventoryConstants::MSG_VARIANT_NO_VARIANTS));
         return false;
     }
 
@@ -337,32 +471,32 @@ bool VariantsDialog::validateAndCollect()
     for (int i = 0; i < m_rows.size(); ++i) {
         const VariantRow& row = m_rows[i];
 
-        QString name = row.nameEdit->text().trimmed();
+        const QString name = row.nameText.trimmed();
         if (name.isEmpty()) {
-            AppHelpers::showWarning(this, QString(tr("Variant %1: %2"))
-                                        .arg(i + 1)
-                                        .arg(tr(InventoryConstants::MSG_VARIANT_NAME_EMPTY)));
+            AppHelpers::showWarning(this, tr("Variant %1: %2")
+                                            .arg(i + 1)
+                                            .arg(AppHelpers::trMsg(InventoryConstants::MSG_VARIANT_NAME_EMPTY)));
             return false;
         }
 
         bool costOk = false, priceOk = false;
-        double cost  = stripCurrency(row.costEdit->text()).toDouble(&costOk);
-        double price = stripCurrency(row.priceEdit->text()).toDouble(&priceOk);
+        const double cost  = stripCurrency(row.costText).toDouble(&costOk);
+        const double price = stripCurrency(row.priceText).toDouble(&priceOk);
 
         if (!costOk) {
-            AppHelpers::showWarning(this, QString(tr("Variant %1: %2"))
-                                        .arg(i + 1)
-                                        .arg(tr(InventoryConstants::MSG_VARIANT_COST_INVALID)));
+            AppHelpers::showWarning(this, tr("Variant %1: %2")
+                                            .arg(i + 1)
+                                            .arg(AppHelpers::trMsg(InventoryConstants::MSG_VARIANT_COST_INVALID)));
             return false;
         }
         if (!priceOk) {
-            AppHelpers::showWarning(this, QString(tr("Variant %1: %2"))
-                                        .arg(i + 1)
-                                        .arg(tr(InventoryConstants::MSG_VARIANT_PRICE_INVALID)));
+            AppHelpers::showWarning(this, tr("Variant %1: %2")
+                                            .arg(i + 1)
+                                            .arg(AppHelpers::trMsg(InventoryConstants::MSG_VARIANT_PRICE_INVALID)));
             return false;
         }
 
-        int stock = row.stockEdit ? row.stockEdit->text().toInt() : 0;
+        const int stock = m_isService ? 0 : row.stockText.toInt();
         result.append(PendingVariant(row.variantId, name, cost, price, stock));
     }
 

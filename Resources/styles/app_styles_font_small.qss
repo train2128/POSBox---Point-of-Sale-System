@@ -1,6 +1,8 @@
 /* ============================================
    POSBox - Font Overlay: Small (13px baseline)
    Loaded on top of the color theme file.
+   Shapes: pill/capsule radius = height / 2, pinned
+   via min-height so the capsule is exact.
    ============================================ */
 
 QLabel {
@@ -10,23 +12,29 @@ QLabel {
 QLineEdit {
     font-size: 13px;
     padding: 8px 12px;
+    min-height: 20px;
+    border-radius: 19px;
 }
 
 QPushButton {
     font-size: 13px;
     padding: 8px 16px;
     min-height: 20px;
+    border-radius: 19px;
 }
 
 QComboBox {
     font-size: 13px;
-    padding: 7px 12px;
+    padding: 7px 6px 7px 12px;
+    min-height: 20px;
+    border-radius: 18px;
 }
 
-QSpinBox, QDoubleSpinBox {
+QSpinBox, QDoubleSpinBox, QTimeEdit {
     font-size: 13px;
-    padding: 6px 8px;
+    padding: 6px 6px 6px 8px;
     min-height: 20px;
+    border-radius: 17px;
 }
 
 QTableWidget, QTableView {
@@ -45,7 +53,9 @@ QTabBar::tab {
 
 QDateEdit {
     font-size: 13px;
-    padding: 5px 10px;
+    padding: 5px 6px 5px 10px;
+    min-height: 20px;
+    border-radius: 16px;
 }
 
 /* Tables header override (Tickets app) */
@@ -57,25 +67,78 @@ QTableView QHeaderView::section {
 /* Cart */
 .cart-item-name  { font-size: 13px; }
 .cart-item-price { font-size: 13px; }
-.cart-item-remove { font-size: 16px; }
+.cart-item-remove { font-size: 14px; }
 
 /* Discount items */
 .discount-separator-label { font-size: 11px; }
 .discount-name   { font-size: 13px; }
 .discount-amount { font-size: 13px; }
 
+/* Inventory uses ID selectors in the color theme; mirror the selected scale
+   here so those more-specific widget rules do not pin it to medium sizing. */
+QLabel#headerTitle { font-size: 24px; }
+QLabel#headerSubtitle { font-size: 13px; }
+QLabel#footerLabel { font-size: 11px; }
+QPushButton#kpiLabel, QPushButton#kpiLabelOut, QPushButton#kpiLabelLow { font-size: 13px; }
+QPushButton#tabProducts, QPushButton#tabCategories, QPushButton#tabDiscounts { font-size: 13px; }
+QPushButton#actionAdd, QPushButton#actionEdit, QPushButton#actionDelete { font-size: 13px; }
+QLineEdit#searchBox { font-size: 13px; }
+QTableWidget#mainTable { font-size: 13px; }
+QTableWidget#mainTable QHeaderView::section { font-size: 13px; }
+
 /* Dialogs */
-QLabel#variant-picker-title  { font-size: 14px; }
-QListWidget#variant-picker-list { font-size: 13px; }
-QListWidget#variant-picker-list::item { padding: 8px 12px; }
 
-QLabel#custom-item-title { font-size: 14px; }
-QLabel#custom-item-label { font-size: 12px; }
-QLineEdit#custom-item-field { font-size: 13px; padding: 6px 10px; }
 
-QLabel#discount-dialog-title         { font-size: 14px; }
-QLabel#discount-dialog-section-label { font-size: 11px; }
-QLabel#discount-dialog-hint          { font-size: 11px; }
-QLabel#discount-dialog-preview       { font-size: 13px; }
-QComboBox#discount-dialog-combo      { font-size: 13px; padding: 6px 10px; }
-QLineEdit#discount-dialog-input      { font-size: 13px; padding: 6px 10px; }
+
+QLabel[uiRole="desc"], QLabel[uiRole="field"] {
+    font-size: 11px;
+}
+
+/* Register */
+QFrame#cartPanel { min-width: 320px; }
+QLabel#product-name { font-size: 12px; }
+QLabel#product-price-label { font-size: 11px; }
+QLabel#totalLabel { font-size: 24px; }
+
+/* Modern dialogs */
+QLabel#modalTitle { font-size: 15px; }
+QLabel#modalSubtitle { font-size: 11px; }
+QLabel#modalSideTitle { font-size: 9px; }
+QLabel#modalFieldLabel, QLabel#modalRowLabel { font-size: 11px; }
+QLabel#modalChoiceTitle { font-size: 13px; }
+QLabel#modalStripLabel, QLabel#modalMoneySuffix, QLabel#modalMatch, QLabel#modalSwitchLabel { font-size: 12px; }
+QLabel#modalStripValue { font-size: 13px; }
+QLineEdit#modalMoneyBig { font-size: 20px; min-height: 34px; }
+QPushButton#modalCancelLink { font-size: 12px; }
+QPushButton#discountChip { font-size: 11px; }
+QLabel#discountLineName, QLabel#discountLineValue { font-size: 11px; }
+QLabel#discountTotal { font-size: 28px; }
+QTableWidget#openTicketsTable QHeaderView::section { font-size: 10px; }
+QTableWidget#openTicketsTable { font-size: 12px; }
+
+QLabel#modalRowLabel { min-width: 96px; max-width: 96px; }
+
+/* Login window */
+QLabel#loginTitle { font-size: 20px; }
+QLabel#loginWelcome { font-size: 16px; }
+QLabel#loginRole, QLabel#launcherVersion { font-size: 10px; }
+QLabel#loginMessage { font-size: 11px; }
+QLabel#launcherAppName { font-size: 12px; }
+
+/* Message window, Save ticket, variants */
+QLabel#messageTitle { font-size: 15px; }
+QLabel#messageText { font-size: 12px; }
+QLabel#messageAmount { font-size: 22px; }
+QLabel#saveTicketLeft { font-size: 24px; }
+QLabel#variantStock { font-size: 11px; }
+QTextEdit#modalTextBox { font-size: 12px; }
+
+/* Notification panel */
+QLabel#notifHeaderTitle { font-size: 14px; }
+QLabel#notifSubtitle, QLabel#notifDate { font-size: 10px; }
+QLabel#notifSection { font-size: 9px; }
+QLabel#notifTitle { font-size: 12px; }
+QLabel#notifMessage { font-size: 11px; }
+QPushButton#notifMarkAll, QPushButton#notifClearAll { font-size: 10px; }
+QLabel#notifEmptyTitle { font-size: 13px; }
+QLabel#notifEmptyHint { font-size: 11px; }

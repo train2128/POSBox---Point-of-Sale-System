@@ -25,6 +25,13 @@
        </widget>
       </item>
       <item>
+       <widget class="QLabel" name="incomeLabel">
+        <property name="text">
+         <string/>
+        </property>
+       </widget>
+      </item>
+      <item>
        <spacer name="horizontalSpacer_2">
         <property name="orientation">
          <enum>Qt::Orientation::Horizontal</enum>
@@ -37,14 +44,21 @@
         </property>
        </spacer>
       </item>
-      <item>
-       <widget class="QPushButton" name="logoutBtn">
-        <property name="text">
-         <string>PushButton</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
+<item>
+        <widget class="QPushButton" name="notificationBtn">
+         <property name="text">
+          <string>PushButton</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="logoutBtn">
+         <property name="text">
+          <string>PushButton</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
     </item>
     <item>
      <layout class="QHBoxLayout" name="horizontalLayout_2">

@@ -2,79 +2,40 @@
 #define TICKETPRINTMANAGER_H
 
 #include <QObject>
-#include <QSqlRecord>
-#include <QList>
+#include <QString>
+#include "InvoicePainter.h"
 
-class QTextDocument;
-class QTextCursor;
-class QTextCharFormat;
-class QTextBlockFormat;
 class QPrinter;
-class DatabaseManager;
+class LocalApi;
+class LocalImages;
 class QWidget;
-
-struct CustomerInvoiceData {
-    QString companyName;
-    QString matriculeFiscal;
-    QString address;
-    QString phone;
-    bool isEmpty() const {
-        return companyName.isEmpty() && matriculeFiscal.isEmpty() &&
-               address.isEmpty() && phone.isEmpty();
-    }
-};
 
 /**
  * Handles ticket invoice generation and printing.
- * Produces an A4 invoice with shop header, items table, totals, stamp box, and footer.
+ * Collects the invoice data; InvoicePainter draws it on one A4 page.
  */
 class TicketPrintManager : public QObject
 {
     Q_OBJECT
 
 public:
-    explicit TicketPrintManager(DatabaseManager* db, QWidget* parent = nullptr);
+    explicit TicketPrintManager(LocalApi* api, LocalImages* images,
+                                QWidget* parent = nullptr);
 
     // Show print preview dialog then print
-    void printTicketWithPreview(int ticketId, const CustomerInvoiceData& customerData = CustomerInvoiceData());
+    void printTicketWithPreview(int ticketId);
 
 private slots:
     void printPreview(QPrinter* printer);
 
 private:
-    // Document generation
-    void generateInvoiceDocument(QTextDocument* document, int ticketId, const CustomerInvoiceData& customerData);
-    void addInvoiceTitle(QTextCursor& cursor, const QString& ticketNumber, const QString& date);
-    void addCustomerDetails(QTextCursor& cursor, const CustomerInvoiceData& customerData);
-    void addItemsTable(QTextCursor& cursor, const QList<QSqlRecord>& items,
-                       double subtotal, double discountAmount, double total);
-    void addSummary(QTextCursor& cursor, double total);
-    void addStampAndSignature(QTextCursor& cursor);
-    void addFooter(QTextCursor& cursor);
+    bool loadInvoice(int ticketId);
+    void savePdfToInvoices();
 
-    // PDF save
-    void savePdfToInvoices(const QString& ticketNumber, QTextDocument* document);
-
-    // DB helpers
-    QSqlRecord getShopProfileRecord();
-    QSqlRecord getTicketRecord(int ticketId);
-    QList<QSqlRecord> getTicketItemsRecord(int ticketId);
-    QString documentsRootPath() const;
-
-    // Text format helpers
-    QTextCharFormat getTitleFormat();
-    QTextCharFormat getHeaderFormat();
-    QTextCharFormat getNormalFormat();
-    QTextCharFormat getBoldFormat();
-    QTextBlockFormat getCenterFormat();
-    QTextBlockFormat getLeftFormat();
-    QTextBlockFormat getRightFormat();
-
-    DatabaseManager*  m_db;
-    QWidget*          m_parent;
-    QTextDocument*    m_currentDocument;
-    int               m_currentTicketId;
-    CustomerInvoiceData m_currentCustomerData;
+    LocalApi*     m_api;
+    LocalImages*  m_images;
+    QWidget*       m_parent;
+    InvoiceContent m_invoice;
 };
 
 #endif // TICKETPRINTMANAGER_H

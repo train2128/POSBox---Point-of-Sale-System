@@ -4,18 +4,23 @@
 #include <QMainWindow>
 #include <QHash>
 #include <QList>
+#include <QPointer>
 #include <QResizeEvent>
+#include <QSet>
+#include <QImage>
 #include "DiscountHandler.h"
 #include "VariantPickerDialog.h"
 #include "CustomItemDialog.h"
+#include "ProductButton.h"
 
 class UserSession;
-class DatabaseManager;
+class LocalApi;
+class LocalImages;
 class ChangeNotifier;
-class NotificationManager;
-class NotificationPanel;
+class NotificationBell;
 class QPushButton;
 class QTimer;
+class QLabel;
 
 namespace Ui {
 class RegisterWindow;
@@ -33,10 +38,15 @@ struct CartItem {
     bool isService;
     int originalProductId;
     int variantId;  // -1 if no variant
+    int addedOrder; // rows stay in the order items were added
 
     CartItem()
         : price(0.0), cost(0.0), quantity(1), stock(0),
-        isService(false), originalProductId(-1), variantId(-1) {}
+        isService(false), originalProductId(-1), variantId(-1)
+    {
+        static int nextOrder = 0;
+        addedOrder = nextOrder++;
+    }
 };
 
 /**
@@ -48,17 +58,16 @@ class RegisterWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    explicit RegisterWindow(UserSession* session, DatabaseManager* dbManager,
+    explicit RegisterWindow(UserSession* session, LocalApi* api,
+                            LocalImages* images,
                             ChangeNotifier* notifier, QWidget* parent = nullptr);
     ~RegisterWindow();
 
-    void checkPendingEditRequest();
-    void retranslateUi();
+    // Handles a "Register|flag|id" deep-link (from the Launcher navigation stream).
+    void handleNavigation(const QString& action);
 
 private slots:
     // Top bar actions
-    void onTicketsClicked();
-    void onNotificationClicked();
     void onLogoutClicked();
 
     // Product section
@@ -67,6 +76,7 @@ private slots:
     void onSearchTimer();
     void onProductButtonClicked();
     void onCustomItemClicked();
+    void onImageReady(const QString& filename, int maxSize, const QImage& image);
 
     // Cart section
     void onCartQuantityChanged(int cartKey, int newQuantity);
@@ -100,6 +110,10 @@ private:
     void updateCartDisplay();
     void updateCartTotal();
     void clearCart();
+    QList<CartItem> cartInOrder() const;
+    QList<int> cartKeysInOrder() const;
+    void setCheckoutLabels(const QString& confirm, const QString& cancel);
+    void updateCheckoutState();
 
     // Open ticket button state
     void updateOpenTicketButton();
@@ -117,16 +131,12 @@ private:
     // Edit mode
     void enterEditMode(int ticketId);
     void exitEditMode();
-    void adjustStockDiff(const QHash<int, int>& oldQtys, const QHash<int, int>& newQtys);
-    void adjustStockDiff(const QHash<int, int>& oldQtys, const QHash<int, int>& newQtys, bool isVariant);
 
     // Helpers
     void updateUserDisplay();
-    void deductStockForTicket(int ticketId);
+    void updateDailyIncome();
     void showTicketCompletedDialog(int ticketId);
     void printTicket(int ticketId);
-    void updateProductOutOfStock(int productId, bool hasVariants);
-    void updateVariantOutOfStock(int variantId);
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
@@ -135,17 +145,39 @@ protected:
 
     // Core dependencies
     UserSession* m_session;
-    DatabaseManager* m_db;
+    LocalApi* m_api;
+    LocalImages* m_images;
     ChangeNotifier* m_notifier;
 
     // Data
     QList<QHash<QString, QVariant>> m_categories;
     QList<QHash<QString, QVariant>> m_products;
+    bool m_productsLoaded = false;
+    bool m_loadedShowOutOfStock = true;
     QHash<int, CartItem> m_cart;  // Key = productId or variant offset
     QList<DiscountItem> m_discounts;
 
+    // Cart panel
+    void buildLayout();
+    QLabel* m_cartCountLabel = nullptr;
+    QWidget* m_cartEmptyHint = nullptr;
+    QWidget* m_totalsDetail = nullptr;
+    QLabel* m_subtotalLabel = nullptr;
+    QLabel* m_discountLabel = nullptr;
+    QString m_confirmText;   // set in the constructor, in the app language
+
     // Product buttons (for updating stock)
     QList<QWidget*> m_productButtons;
+
+    // Product images for the current grid, keyed by filename. Filled by
+    // displayProducts(); LocalImages serves them asynchronously (never on
+    // the GUI thread), so the window stays responsive while they arrive.
+    QHash<QString, QList<QPointer<ProductButton>>> m_buttonsByImage;
+    QSet<QString> m_requestedImages;  // in flight or resolved (per run)
+
+    // Resize fires continuously while dragging; rebuild the grid once the
+    // size settles instead of once per event.
+    QTimer* m_resizeRebuildTimer;
 
     // Search
     QTimer* m_searchTimer;
@@ -171,10 +203,8 @@ protected:
     double  m_openTicketAdvance;
     QString m_openTicketDescription;
 
-    // Notification system
-    NotificationManager* m_notificationManager;
-    NotificationPanel* m_notificationPanel;
-    void updateNotificationBadge();
+    // Notifications (derived from the data, read state per user)
+    NotificationBell* m_bell = nullptr;
 };
 
 #endif // REGISTERWINDOW_H

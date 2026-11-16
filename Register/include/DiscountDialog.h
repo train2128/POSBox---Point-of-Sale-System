@@ -2,24 +2,25 @@
 #define DISCOUNTDIALOG_H
 
 #include "DiscountHandler.h"
-#include <QDialog>
+#include "ModernDialog.h"
+#include <QList>
 
-class QComboBox;
+class QButtonGroup;
 class QLineEdit;
 class QLabel;
-class DatabaseManager;
+class LocalApi;
 
 /**
  * Dialog for applying a discount to the cart.
  * Supports preset discounts from DB and custom fixed/percentage input.
  * Only one discount can be active at a time — replaces any existing discount.
  */
-class DiscountDialog : public QDialog
+class DiscountDialog : public ModernDialog
 {
     Q_OBJECT
 
 public:
-    explicit DiscountDialog(DatabaseManager* db, double subtotal, QWidget* parent = nullptr);
+    explicit DiscountDialog(LocalApi* api, double subtotal, QWidget* parent = nullptr);
     ~DiscountDialog();
 
     /**
@@ -34,18 +35,28 @@ private slots:
     void onPresetChanged(int index);
 
 private:
+    struct Preset {
+        int id;  // -1 is "None"
+        QString name;
+        QString type;
+        double value;
+    };
+
     void setupUI();
     void loadPresets();
     void updatePreview();
+    const Preset& selectedPreset() const;
+    static QString chipText(const Preset& preset);
 
-    DatabaseManager* m_db;
-    double           m_subtotal;
-
-    QComboBox* m_presetCombo;
-    QLineEdit* m_customEdit;
-    QLabel*    m_previewLabel;
-
-    DiscountItem m_result;
+    LocalApi*    m_api;
+    double        m_subtotal;
+    QList<Preset> m_presets;
+    QButtonGroup* m_presetGroup;
+    QLineEdit*    m_customEdit;
+    QLabel*       m_discountName;
+    QLabel*       m_discountValue;
+    QLabel*       m_totalLabel;
+    DiscountItem  m_result;
 };
 
 #endif // DISCOUNTDIALOG_H

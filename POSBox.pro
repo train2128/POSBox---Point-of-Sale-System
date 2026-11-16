@@ -3,6 +3,7 @@ TEMPLATE = subdirs
 # Build order
 SUBDIRS += \
     Core \
+    Launcher \
     Register \
     Inventory \
     Tickets \
@@ -10,6 +11,7 @@ SUBDIRS += \
     Financial
 
 # Dependencies - apps depend on Core
+Launcher.depends = Core
 Register.depends = Core
 Inventory.depends = Core
 Tickets.depends = Core

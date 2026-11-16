@@ -1,4 +1,5 @@
 #include "settingswindow.h"
+#include "Prefixes.h"
 #include "ui_settingswindow.h"
 #include "SettingsConstants.h"
 #include "PrinterConstants.h"
@@ -6,17 +7,23 @@
 #include "UserDialog.h"
 #include "UserSession.h"
 #include "SessionManager.h"
-#include "DatabaseManager.h"
-#include "QueryRepository.h"
+#include "LocalApi.h"
+#include "LocalImages.h"
+#include "LocalSettings.h"
+#include "NotificationSound.h"
 #include "CommonConfig.h"
 #include "ThermalPrinter.h"
-#include "NotificationSettings.h"
-#include "PermissionManager.h"
 #include "AccessControl.h"
 #include "LogoutManager.h"
-#include "CountryData.h"
-#include "Prefixes.h"
+#include "AppLock.h"
+#include "ChangeNotifier.h"
+#include "LocalDb.h"
 #include "TranslationManager.h"
+#include <QComboBox>
+#include <QSet>
+#include <QSignalBlocker>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QApplication>
 #include <QCursor>
 #include <QLabel>
@@ -32,36 +39,38 @@
 #include <QStandardItemModel>
 #include <QStandardItem>
 #include <QHeaderView>
-#include <QSqlQuery>
-#include <QSqlError>
-#include <QMessageBox>
+#include <QSpinBox>
+#include <QTimeEdit>
 #include <QDebug>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QSerialPortInfo>
 #include <QProcess>
 #include <QDateTime>
 #include <QFormLayout>
+#include <QColor>
+#include <QColorDialog>
 
-SettingsWindow::SettingsWindow(UserSession* session, DatabaseManager* db, QWidget* parent)
+
+SettingsWindow::SettingsWindow(UserSession* session, LocalApi* api,
+                               LocalImages* images, QWidget* parent)
     : QMainWindow(parent)
     , ui(new Ui::SettingsWindow)
     , m_session(session)
-    , m_db(db)
-    , m_permissionManager(nullptr)
+    , m_api(api)
+    , m_images(images)
     , m_usersModel(nullptr)
 {
     ui->setupUi(this);
-    m_permissionManager = new PermissionManager(m_db->database());
     setupUI();
     setupValidators();
     setupConnections();
-    loadCountryCurrency();
-    populateLanguageCombo();
-    loadLanguage();
     loadProfile();
     loadUsers();
     loadAppSettings();
+    loadCountryCurrency();
+    loadLanguage();
     loadSyncPath();
     populatePrinterCombos();
     scanComPorts();
@@ -71,7 +80,6 @@ SettingsWindow::SettingsWindow(UserSession* session, DatabaseManager* db, QWidge
 
 SettingsWindow::~SettingsWindow()
 {
-    delete m_permissionManager;
     delete ui;
 }
 
@@ -81,81 +89,80 @@ SettingsWindow::~SettingsWindow()
 
 void SettingsWindow::setupUI()
 {
+    setWindowTitle(tr("POSBox - Settings"));
+
     if (centralWidget()) {
         centralWidget()->setObjectName("centralwidget");
     }
 
-    // Always open on the first tab
-    ui->tabWidget->setCurrentIndex(0);
+    // Button labels
+    ui->saveSettingsBtn->setText(tr("Save"));
+    ui->cancelSettingsBtn->setText(tr("Cancel"));
+    ui->logoutBtn->setText("");
+    ui->logoutBtn->setIcon(QIcon(StyleManager::iconPath("logout")));
+    ui->logoutBtn->setIconSize(QSize(22, 22));
+    ui->logoutBtn->setFixedSize(36, 36);
+    ui->logoutBtn->setToolTip(tr("Logout"));
+    ui->userAddBtn->setText(tr("Add"));
+    ui->userEditBtn->setText(tr("Edit"));
+    ui->userDeleteBtn->setText(tr("Delete"));
+    ui->portRefreshBtn->setText(tr("Refresh"));
+    ui->savePrinterBtn->setText(tr("Save"));
+    ui->printTestBtn->setText(tr("Test Print"));
 
-    // Center text in all profile fields
-    ui->shopNameField->setAlignment(Qt::AlignCenter);
-    ui->adressField->setAlignment(Qt::AlignCenter);
-    ui->cityField->setAlignment(Qt::AlignCenter);
-    ui->postalField->setAlignment(Qt::AlignCenter);
-    ui->emailField->setAlignment(Qt::AlignCenter);
-    ui->websiteField->setAlignment(Qt::AlignCenter);
-    ui->facebookField->setAlignment(Qt::AlignCenter);
-    ui->instagramField->setAlignment(Qt::AlignCenter);
-    ui->tiktokField->setAlignment(Qt::AlignCenter);
-    ui->whatsappField->setAlignment(Qt::AlignCenter);
-    ui->phoneField->setAlignment(Qt::AlignCenter);
+    // Label texts
+    ui->shopNameLabel->setText(tr("Shop Name"));
+    ui->adressLable->setText(tr("Address"));
+    ui->phoneLabel->setText(tr("Phone"));
+    ui->emailLabel->setText(tr("Email"));
+    ui->websiteLabel->setText(tr("Website"));
+    ui->facebookLabel->setText(tr("Facebook"));
+    ui->instagramLabel->setText(tr("Instagram"));
+    ui->tiktokLabel->setText(tr("TikTok"));
+    ui->whatsappLabel->setText(tr("WhatsApp"));
+    ui->baudRateLabel->setText(tr("Baud Rate"));
+    ui->dataBitsLabel->setText(tr("Data Bits"));
+    ui->parityLabel->setText(tr("Parity"));
+    ui->stopBitsLabel->setText(tr("Stop Bits"));
+    ui->flowLabel->setText(tr("Flow Control"));
+    ui->latencyLabel->setText(tr("Latency"));
+    ui->printerStatusLabel->setText(tr("Status: Not connected"));
+
+    // Allowed day choices for the unpaid-ticket alert
+    const int openTicketDays[] = { 3, 7, 15, 30 };
+    for (int d : openTicketDays)
+        ui->openTicketDays->addItem(tr("%1 days").arg(d), d);
+
+    // Placeholder texts
+    ui->shopNameField->setPlaceholderText(tr("Shop name"));
+    ui->adressField->setPlaceholderText(tr("Address"));
+    ui->cityField->setPlaceholderText(tr("City"));
+    ui->emailField->setPlaceholderText(tr("example@domain.com"));
+    ui->websiteField->setPlaceholderText(tr("https://"));
+    ui->facebookField->setPlaceholderText(tr("Facebook URL"));
+    ui->instagramField->setPlaceholderText(tr("Instagram URL"));
+    ui->tiktokField->setPlaceholderText(tr("TikTok URL"));
+    ui->whatsappField->setPlaceholderText(tr("WhatsApp number"));
+
+    ui->OOSCheckBox->setText("");
+    ui->animationsCheckBox->setText("");
+    ui->notifSoundCheckBox->setText("");
+    ui->notifSoundTestBtn->setText(tr("Play"));
+    ui->notifSoundTestBtn->setToolTip(tr("Hear the notification sound"));
+    ui->printerEnableBox->setText("");
 
     // Logo label
     ui->logoImageLabel->setFixedSize(SettingsConstants::LOGO_IMAGE_SIZE,
                                      SettingsConstants::LOGO_IMAGE_SIZE);
     ui->logoImageLabel->setCursor(QCursor(Qt::PointingHandCursor));
     ui->logoImageLabel->setAlignment(Qt::AlignCenter);
-    ui->logoImageLabel->setStyleSheet(
-        "QLabel {"
-        "  background-color: #3d3d3d;"
-        "  border: 2px dashed #606060;"
-        "  border-radius: 8px;"
-        "  color: #888888;"
-        "  font-size: 11px;"
-        "  font-weight: bold;"
-        "}"
-        "QLabel:hover {"
-        "  background-color: #454545;"
-        "  border-color: #4A90E2;"
-        "}"
-        );
-
-    if (QVBoxLayout* profileLayout = qobject_cast<QVBoxLayout*>(
-            ui->logoImageLabel->parentWidget()->layout())) {
-        int idx = profileLayout->indexOf(ui->logoImageLabel);
-        if (idx >= 0) {
-            profileLayout->removeWidget(ui->logoImageLabel);
-
-            QWidget* logoRow = new QWidget(this);
-            QHBoxLayout* logoLayout = new QHBoxLayout(logoRow);
-            logoLayout->setContentsMargins(0, 4, 0, 4);
-            logoLayout->addStretch();
-            logoLayout->addWidget(ui->logoImageLabel);
-            logoLayout->addStretch();
-
-            profileLayout->insertWidget(idx, logoRow);
-        }
-    }
-
-    // ── Notifications tab — populate day combos (1-30) ───────────────────────
-    for (int i = 1; i <= 30; ++i) {
-        ui->openTicketDays->addItem(QString::number(i), i);
-        ui->openTicketFrequancy->addItem(QString::number(i), i);
-    }
-
-    // Register settings — checkbox behavior
-    ui->OOSCheckBox->setText("");
-    ui->printerEnableBox->setText("");
-
-    // Regional — populate combos
-    populateCountryCurrencyCombos();
-
-    // Sync path field
-    ui->syncPathPath->setReadOnly(true);
+    ui->logoImageLabel->setText(tr("Click to\nupload logo"));
 
     // ---- Users tab ----
     m_usersModel = new QStandardItemModel(0, 5, this);
+    m_usersModel->setHorizontalHeaderLabels({
+        tr("Username"), tr("Display Name"), tr("Role"), tr("Status"), tr("Last Login")
+    });
 
     ui->usersTable->setModel(m_usersModel);
     ui->usersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -173,140 +180,97 @@ void SettingsWindow::setupUI()
     ui->userEditBtn->setProperty("btnStyle", "edit");
     ui->userDeleteBtn->setProperty("btnStyle", "delete");
 
+    // Permissions panel setup
+    ui->userPermissions->setTitle(tr("Permissions"));
+    ui->pWithdrawLabel->setText(tr("Withdraw Cash"));
+    ui->pDeleteTicketLabel->setText(tr("Delete Ticket"));
+    ui->pDeleteProductLabel->setText(tr("Delete Products"));
+    ui->pAddCatLabel->setText(tr("Add Categories"));
+    ui->pDiscountsLabel->setText(tr("Manage Discounts"));
+    ui->permissionsSaveBtn->setText(tr("Save Permissions"));
+
     ui->userPermissions->setVisible(false);
 
-    // Disable Edit/Delete buttons initially
+    // Edit/Delete wait for a selection
     ui->userEditBtn->setEnabled(false);
     ui->userDeleteBtn->setEnabled(false);
 
-    // App Settings combos
-    ui->colorSelect->addItems({"Dark", "Light"});
-    ui->fontSelect->addItems({"Small", "Medium", "Large"});
+    // App Settings combos: the stored value travels as item data, so the
+    // shown text can be translated.
+    ui->colorSelect->addItem(tr("Dark"), "dark");
+    ui->colorSelect->addItem(tr("Light"), "light");
+    ui->fontSelect->addItem(tr("Small"), "small");
+    ui->fontSelect->addItem(tr("Medium"), "medium");
+    ui->fontSelect->addItem(tr("Large"), "large");
     ui->fontSelect->setCurrentIndex(1);
-    ui->bgSelect->addItems({"Default", "Caramel", "Black", "Blue"});
 
-    // Apply all translatable text
-    retranslateUi();
+    // Background image picker (primary) + color fallback beneath it
+    ui->bgImageChooseBtn->setText(tr("Choose Image..."));
+    ui->bgImageChooseBtn->setToolTip(
+        tr("Pick an image file; it is copied into the app data folder and scaled "
+           "to fill the window (light and dark themes)"));
+    ui->bgImageRemoveBtn->setText(tr("Remove"));
+    ui->bgImageRemoveBtn->setToolTip(tr("Remove the image and fall back to the background color"));
+    ui->bgImagePreview->setToolTip(tr("Current background image"));
+    ui->bgImagePreview->setScaledContents(false);
+
+    // Fill mode + dim scrim (image only)
+    ui->bgScaleSelect->addItem(tr("Cover"), "cover");
+    ui->bgScaleSelect->addItem(tr("Stretch"), "stretch");
+    ui->bgScaleSelect->addItem(tr("Fit"), "fit");
+    ui->bgScaleSelect->setToolTip(
+        tr("How the background image fills the window:\n"
+           "Cover - fill side to side, crop the overflow (no distortion)\n"
+           "Stretch - exact fill, may distort\n"
+           "Fit - show the whole image, theme shows around the edges"));
+    ui->bgScaleLabel->setText(tr("Scale"));
+    ui->bgDimLabel->setText(tr("Dim"));
+
+    ui->bgColorBtn->setToolTip(tr("Pick a background color (used when no image is set)"));
+    ui->bgColorBtn->setCursor(Qt::PointingHandCursor);
+    ui->bgColorResetBtn->setText(tr("Reset"));
+    ui->bgColorResetBtn->setToolTip(tr("Restore the default caramel background"));
+
+    createRegionalControls();
+    createBackupControls();
 
     updateUserDisplay();
+    buildConsoleLayout();
     showMaximized();
 }
 
-void SettingsWindow::retranslateUi()
+void SettingsWindow::createRegionalControls()
 {
-    setWindowTitle(tr("POSBox - Settings"));
+    m_countrySelect = new QComboBox(this);
+    m_currencySelect = new QComboBox(this);
+    m_languageSelect = new QComboBox(this);
+    for (QComboBox* combo : {m_countrySelect, m_currencySelect, m_languageSelect})
+        combo->setMinimumWidth(220);
+    m_phonePrefix = new QLabel(this);
+    m_phonePrefix->setObjectName("phonePrefix");
+    m_phonePrefix->setMinimumWidth(44);
+    m_phonePrefix->setAlignment(Qt::AlignCenter);
+    m_currentCountry = CountryData::defaultCountry();
+    populateCountryCurrencyCombos();
+    populateLanguageCombo();
+}
 
-    // Tab titles
-    ui->tabWidget->setTabText(0, tr("Shop Profile"));
-    ui->tabWidget->setTabText(1, tr("Users"));
-    ui->tabWidget->setTabText(2, tr("App Settings"));
-    ui->tabWidget->setTabText(3, tr("Printer"));
-    ui->tabWidget->setTabText(4, tr("Notifications"));
-
-    // Group box titles
-    ui->themeSettings->setTitle(tr("Theme"));
-    ui->databaseSettings->setTitle(tr("Database"));
-    ui->registerSettings->setTitle(tr("Register"));
-    ui->regionalSettings->setTitle(tr("Country & Currency"));
-    ui->languageSettings->setTitle(tr("Language"));
-    ui->userPermissions->setTitle(tr("Permissions"));
-
-    // Button labels
-    ui->saveSettingsBtn->setText(tr("Save"));
-    ui->cancelSettingsBtn->setText(tr("Cancel"));
-    ui->logoutBtn->setText(tr("Logout"));
-    ui->userAddBtn->setText(tr("Add"));
-    ui->userEditBtn->setText(tr("Edit"));
-    ui->userDeleteBtn->setText(tr("Delete"));
-    ui->syncPathBtn->setText(tr("Browse"));
-    ui->backupBtn->setText(tr("Backup"));
-    ui->restoreBtn->setText(tr("Import"));
-    ui->portRefreshBtn->setText(tr("Refresh"));
-    ui->savePrinterBtn->setText(tr("Save"));
-    ui->printTestBtn->setText(tr("Test Print"));
-    ui->permissionsSaveBtn->setText(tr("Save Permissions"));
-
-    // Label texts — Shop Profile
-    ui->shopNameLabel->setText(tr("Shop Name"));
-    ui->adressLable->setText(tr("Address"));
-    ui->phoneLabel->setText(tr("Phone"));
-    ui->emailLabel->setText(tr("Email"));
-    ui->websiteLabel->setText(tr("Website"));
-    ui->facebookLabel->setText(tr("Facebook"));
-    ui->instagramLabel->setText(tr("Instagram"));
-    ui->tiktokLabel->setText(tr("TikTok"));
-    ui->whatsappLabel->setText(tr("WhatsApp"));
-
-    // Label texts — Printer
-    ui->baudRateLabel->setText(tr("Baud Rate"));
-    ui->dataBitsLabel->setText(tr("Data Bits"));
-    ui->parityLabel->setText(tr("Parity"));
-    ui->stopBitsLabel->setText(tr("Stop Bits"));
-    ui->flowLabel->setText(tr("Flow Control"));
-    ui->latencyLabel->setText(tr("Latency"));
-    ui->lastSyncLabel->setText(tr("Last sync: Never"));
-    ui->printerStatusLabel->setText(tr("Status: Not connected"));
-
-    // Label texts — Notifications
-    ui->openTicketLabel->setText(tr("Open Tickets (days before + frequency):"));
-    ui->outStockLabel->setText(tr("Out of Stock:"));
-    ui->nearOutStockLabel->setText(tr("Nearly Out of Stock:"));
-
-    // Label texts — Register & Printer enable
-    ui->OOSLabel->setText(tr("Show out of stock items in Register:"));
-    ui->printerEnableLabel->setText(tr("Enable Thermal Printer:"));
-
-    // Label texts — Regional
-    ui->countryLabel->setText(tr("Country"));
-    ui->currencyLabel->setText(tr("Currency"));
-    ui->phonePrefixLabel->setText(tr("Phone prefix:"));
-
-    // Label texts — Language
-    ui->languageLabel->setText(tr("App Language"));
-
-    // Placeholder texts
-    ui->shopNameField->setPlaceholderText(tr("Shop name"));
-    ui->adressField->setPlaceholderText(tr("Address"));
-    ui->cityField->setPlaceholderText(tr("City"));
-    ui->postalField->setPlaceholderText(tr("%1 digits").arg(SettingsConstants::POSTAL_DIGIT_COUNT));
-    ui->emailField->setPlaceholderText(tr("example@domain.com"));
-    ui->websiteField->setPlaceholderText(tr("https://"));
-    ui->facebookField->setPlaceholderText(tr("Facebook URL"));
-    ui->instagramField->setPlaceholderText(tr("Instagram URL"));
-    ui->tiktokField->setPlaceholderText(tr("TikTok URL"));
-    ui->whatsappField->setPlaceholderText(tr("WhatsApp number"));
-    ui->syncPathPath->setPlaceholderText(tr("Sync folder path"));
-    ui->phoneField->setPlaceholderText(tr("%1 digits").arg(SettingsConstants::PHONE_DIGIT_COUNT));
-
-    // Logo placeholder text
-    if (ui->logoImageLabel->pixmap().isNull()) {
-        ui->logoImageLabel->setText(tr("Click to\nupload logo"));
-    }
-
-    // Permission labels
-    ui->pWithdrawLabel->setText(tr("Withdraw Cash:"));
-    ui->pDeleteTicketLabel->setText(tr("Delete Ticket:"));
-    ui->pDeleteProductLabel->setText(tr("Delete Products:"));
-    ui->pAddCatLabel->setText(tr("Add Categories:"));
-    ui->pDiscountsLabel->setText(tr("Manage Discounts:"));
-    ui->pExpensesLabel->setText(tr("Edit Expenses:"));
-    ui->pRecurringLabel->setText(tr("Pay Recurring:"));
-
-    // Users table headers
-    m_usersModel->setHorizontalHeaderLabels({
-        tr("Username"), tr("Display Name"), tr("Role"), tr("Status"), tr("Last Login")
-    });
+void SettingsWindow::createBackupControls()
+{
+    m_syncPathEdit = new QLineEdit(this);
+    m_syncPathEdit->setReadOnly(true);
+    m_syncPathEdit->setPlaceholderText(tr("Choose the folder that receives the backup"));
+    m_syncPathBtn = new QPushButton(tr("Browse"), this);
+    m_backupBtn = new QPushButton(tr("Back Up Now"), this);
+    m_backupBtn->setProperty("btnStyle", "edit");
+    m_restoreBtn = new QPushButton(tr("Restore From Backup..."), this);
+    m_lastBackupLabel = new QLabel(this);
 }
 
 void SettingsWindow::setupValidators()
 {
-    ui->postalField->setValidator(new QRegularExpressionValidator(
-        QRegularExpression(QString("^\\d{0,%1}$").arg(SettingsConstants::POSTAL_DIGIT_COUNT)), this));
-    ui->postalField->setMaxLength(SettingsConstants::POSTAL_DIGIT_COUNT);
-
-    ui->phoneField->setValidator(new QRegularExpressionValidator(
-        QRegularExpression(QString("^\\d{0,%1}$").arg(SettingsConstants::PHONE_DIGIT_COUNT)), this));
-    ui->phoneField->setMaxLength(SettingsConstants::PHONE_DIGIT_COUNT);
+    // Phone and postal rules follow the chosen country (updateRegionalFields).
+    updateRegionalFields();
 }
 
 void SettingsWindow::setupConnections()
@@ -338,31 +302,48 @@ void SettingsWindow::setupConnections()
     connect(ui->printTestBtn,   &QPushButton::clicked, this, &SettingsWindow::onPrintTestBtn);
     connect(ui->portRefreshBtn, &QPushButton::clicked, this, &SettingsWindow::onPortRefreshBtn);
 
-    // App Settings — auto-save + live-apply on color, font, or background change
+    // App Settings — auto-save + live-apply on color or font change
     connect(ui->colorSelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { saveAppSettings(); });
     connect(ui->fontSelect,  QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { saveAppSettings(); });
-    connect(ui->bgSelect,    QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { saveAppSettings(); });
 
-    // Regional — country/currency
-    connect(ui->countrySelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+    // Background image picker — copies into app data and live-applies
+    connect(ui->bgImageChooseBtn, &QPushButton::clicked,
+            this, &SettingsWindow::onBgImageChooseClicked);
+    connect(ui->bgImageRemoveBtn, &QPushButton::clicked,
+            this, &SettingsWindow::onBgImageRemoveClicked);
+
+    // Fill mode + dim slider — saved and re-applied live
+    connect(ui->bgScaleSelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { applyBackgroundImageOptions(); });
+    connect(ui->bgDimSlider, &QSlider::valueChanged,
+            this, [this](int) { applyBackgroundImageOptions(); });
+
+    // Background color picker — live-applies on change / reset
+    connect(ui->bgColorBtn, &QPushButton::clicked,
+            this, &SettingsWindow::onBgColorClicked);
+    connect(ui->bgColorResetBtn, &QPushButton::clicked,
+            this, [this]() { applyBackgroundColor(QColor()); });
+
+    // Region & language
+    connect(m_countrySelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsWindow::onCountryChanged);
-    connect(ui->currencySelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+    connect(m_currencySelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsWindow::onCurrencyChanged);
-
-    // Language
-    connect(ui->languageSelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+    connect(m_languageSelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SettingsWindow::onLanguageChanged);
 
-    // Database
-    connect(ui->syncPathBtn, &QPushButton::clicked, this, &SettingsWindow::onSyncPathBrowseClicked);
-    connect(ui->backupBtn,   &QPushButton::clicked, this, &SettingsWindow::onBackupClicked);
-    connect(ui->restoreBtn,  &QPushButton::clicked, this, &SettingsWindow::onImportClicked);
+    // Backup & restore (local, manual)
+    connect(m_syncPathBtn, &QPushButton::clicked, this, &SettingsWindow::onSyncPathBrowseClicked);
+    connect(m_backupBtn, &QPushButton::clicked, this, &SettingsWindow::onBackupClicked);
+    connect(m_restoreBtn, &QPushButton::clicked, this, &SettingsWindow::onImportClicked);
 
     // OOS checkbox — auto-save immediately on toggle
     connect(ui->OOSCheckBox, &QCheckBox::toggled, this, [this](bool) { saveAppSettings(); });
+    connect(ui->animationsCheckBox, &QCheckBox::toggled, this, [this](bool) { saveAppSettings(); });
+    connect(ui->notifSoundCheckBox, &QCheckBox::toggled, this, [this](bool) { saveAppSettings(); });
+    connect(ui->notifSoundTestBtn, &QPushButton::clicked, this, []() { NotificationSound::preview(); });
 
     // Printer enable checkbox
     connect(ui->printerEnableBox, &QCheckBox::toggled,
@@ -371,21 +352,17 @@ void SettingsWindow::setupConnections()
     // Notifications — auto-save on any change
     connect(ui->openTicketCheck, &QCheckBox::toggled, this, [this](bool) { saveNotificationSettings(); });
     connect(ui->openTicketDays, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { saveNotificationSettings(); });
-    connect(ui->openTicketFrequancy, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) { saveNotificationSettings(); });
     connect(ui->outStockCheck, &QCheckBox::toggled, this, [this](bool) { saveNotificationSettings(); });
     connect(ui->nearOutStockCheck, &QCheckBox::toggled, this, [this](bool) { saveNotificationSettings(); });
-
-    // Language change — retranslate all UI text
-    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
-            this, &SettingsWindow::retranslateUi);
+    connect(ui->lowStockMinSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) { saveNotificationSettings(); });
 }
 
 void SettingsWindow::updateUserDisplay()
 {
     if (m_session) {
-        ui->userLabel->setText(QString("%1  |  %2")
+        ui->userLabel->setText(QString("%1\n%2")
                                    .arg(m_session->displayName())
-                                   .arg(m_session->role()));
+                                   .arg(AppHelpers::roleName(m_session->role())));
     }
 }
 
@@ -408,13 +385,12 @@ bool SettingsWindow::eventFilter(QObject* obj, QEvent* event)
 
 void SettingsWindow::loadProfile()
 {
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::PROFILE_SELECT);
-
-    if (!query.exec() || !query.next()) {
-        qWarning() << "Failed to load shop profile:" << query.lastError().text();
+    QList<DataRow> rows = m_api->select("shop_profile", {{"id", 1}});
+    if (!m_api->ok() || rows.isEmpty()) {
+        qWarning() << "Failed to load shop profile:" << m_api->lastError();
         return;
     }
+    DataRow query = rows.first();
 
     ui->shopNameField->setText(query.value("shop_name").toString());
     ui->adressField->setText(query.value("address").toString());
@@ -438,13 +414,18 @@ void SettingsWindow::loadProfile()
     m_newLogoSourcePath.clear();
 
     if (!m_existingLogoFilename.isEmpty()) {
-        QString fullPath = POSConfig::getAppDataPath()
-        + POSConfig::LOGO_IMAGE_FOLDER
-            + "/" + m_existingLogoFilename;
-        displayLogo(fullPath);
+        QByteArray raw = m_api->downloadImage(m_existingLogoFilename);
+        if (!raw.isEmpty()) {
+            QPixmap pixmap;
+            if (pixmap.loadFromData(raw))
+                displayPixmap(pixmap);
+            else
+                showLogoPlaceholder();
+        } else {
+            showLogoPlaceholder();
+        }
     } else {
-        ui->logoImageLabel->setPixmap(QPixmap());
-        ui->logoImageLabel->setText(tr("Click to\nupload logo"));
+        showLogoPlaceholder();
     }
 
     onPhoneChanged(ui->phoneField->text());
@@ -459,22 +440,21 @@ bool SettingsWindow::saveProfile()
     QString logoFilenameToSave = m_existingLogoFilename;
 
     if (!m_newLogoSourcePath.isEmpty()) {
-        QString destFolder = POSConfig::getAppDataPath()
-        + POSConfig::LOGO_IMAGE_FOLDER;
-        QDir().mkpath(destFolder);
-
+        // The logo is copied into the app-data logo folder; only the file
+        // name is stored.
+        QFile src(m_newLogoSourcePath);
         QString fileName = QFileInfo(m_newLogoSourcePath).fileName();
-        QString destPath = destFolder + "/" + fileName;
-
-        if (QFile::exists(destPath)) QFile::remove(destPath);
-
-        if (QFile::copy(m_newLogoSourcePath, destPath)) {
+        if (src.open(QIODevice::ReadOnly)
+            && m_api->uploadImage(fileName, src.readAll(), LocalApi::ImageKind::Logo)) {
             logoFilenameToSave     = fileName;
             m_existingLogoFilename = fileName;
             m_newLogoSourcePath.clear();
-            qDebug() << "Logo copied to:" << destPath;
+            if (m_images) m_images->clear();
+            qDebug() << "Logo saved as:" << fileName;
         } else {
-            qWarning() << "Failed to copy logo from:" << m_newLogoSourcePath;
+            qWarning() << "Failed to upload logo:" << m_api->lastError();
+            AppHelpers::showWarning(this, tr("Could not save the logo image.") + "\n\n" + m_api->lastError(), tr("Logo"));
+            return false;
         }
     }
 
@@ -483,69 +463,56 @@ bool SettingsWindow::saveProfile()
         fullPhone = m_currentCountry.phoneCode + ui->phoneField->text().trimmed();
     }
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::PROFILE_UPDATE);
-    query.addBindValue(ui->shopNameField->text().trimmed());
-    query.addBindValue(ui->adressField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->adressField->text().trimmed()));
-    query.addBindValue(ui->postalField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->postalField->text().trimmed()));
-    query.addBindValue(ui->cityField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->cityField->text().trimmed()));
-    query.addBindValue(QVariant());
-    query.addBindValue(fullPhone.isEmpty() ? QVariant() : QVariant(fullPhone));
-    query.addBindValue(ui->emailField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->emailField->text().trimmed()));
-    query.addBindValue(ui->websiteField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->websiteField->text().trimmed()));
-    query.addBindValue(ui->facebookField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->facebookField->text().trimmed()));
-    query.addBindValue(ui->instagramField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->instagramField->text().trimmed()));
-    query.addBindValue(ui->tiktokField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->tiktokField->text().trimmed()));
-    query.addBindValue(ui->whatsappField->text().trimmed().isEmpty()
-                           ? QVariant() : QVariant(ui->whatsappField->text().trimmed()));
-    query.addBindValue(QVariant());
-    query.addBindValue(QVariant());
-    query.addBindValue(QVariant());
-    query.addBindValue(logoFilenameToSave.isEmpty()
-                           ? QVariant() : QVariant(logoFilenameToSave));
+    auto optText = [](const QString& t) -> QVariant {
+        return t.trimmed().isEmpty() ? QVariant() : QVariant(t.trimmed());
+    };
+    QVariantMap values;
+    values["shop_name"] = ui->shopNameField->text().trimmed();
+    values["address"] = optText(ui->adressField->text());
+    values["postal"] = optText(ui->postalField->text());
+    values["city"] = optText(ui->cityField->text());
+    values["country"] = m_currentCountry.code.isEmpty() ? QVariant() : QVariant(m_currentCountry.code);
+    values["phone"] = fullPhone.isEmpty() ? QVariant() : QVariant(fullPhone);
+    values["email"] = optText(ui->emailField->text());
+    values["website"] = optText(ui->websiteField->text());
+    values["facebook"] = optText(ui->facebookField->text());
+    values["instagram"] = optText(ui->instagramField->text());
+    values["tiktok"] = optText(ui->tiktokField->text());
+    values["whatsapp"] = optText(ui->whatsappField->text());
+    values["business_mode"] = QVariant();
+    values["currency"] = QString::fromUtf8(AppConstants::CURRENCY);
+    values["tax_rate"] = QVariant();
+    values["logo_path"] = logoFilenameToSave.isEmpty() ? QVariant() : QVariant(logoFilenameToSave);
 
-    if (!query.exec()) {
-        qWarning() << "Failed to save profile:" << query.lastError().text();
-        QMessageBox::warning(this, tr("Save Failed"), tr(SettingsConstants::MSG_SAVE_FAILED));
+    if (!m_api->update("shop_profile", values, {{"id", 1}})) {
+        qWarning() << "Failed to save profile:" << m_api->lastError();
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_SAVE_FAILED), tr("Save Failed"));
         return false;
     }
 
-    QMessageBox::information(this, tr("Saved"), tr(SettingsConstants::MSG_SAVE_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(SettingsConstants::MSG_SAVE_SUCCESS), tr("Saved"));
     return true;
 }
 
 bool SettingsWindow::validateFields()
 {
     if (ui->shopNameField->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, tr("Validation Error"), tr(SettingsConstants::MSG_SHOP_NAME_EMPTY));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_SHOP_NAME_EMPTY));
         ui->shopNameField->setFocus();
         return false;
     }
     if (!ui->phoneField->text().trimmed().isEmpty() && !isPhoneValid()) {
-        QMessageBox::warning(this, tr("Validation Error"),
-                             QString(tr(SettingsConstants::MSG_PHONE_INVALID))
-                                 .arg(m_currentCountry.phoneDigits));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_PHONE_INVALID).arg(m_currentCountry.phoneDigits));
         ui->phoneField->setFocus();
         return false;
     }
     if (!ui->postalField->text().trimmed().isEmpty() && !isPostalValid()) {
-        QMessageBox::warning(this, tr("Validation Error"),
-                             QString(tr(SettingsConstants::MSG_POSTAL_INVALID))
-                                 .arg(m_currentCountry.postalDigits > 0
-                                          ? m_currentCountry.postalDigits : 10));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_POSTAL_INVALID).arg(m_currentCountry.postalDigits));
         ui->postalField->setFocus();
         return false;
     }
     if (!ui->emailField->text().trimmed().isEmpty() && !isEmailValid()) {
-        QMessageBox::warning(this, tr("Validation Error"), tr(SettingsConstants::MSG_EMAIL_INVALID));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_EMAIL_INVALID));
         ui->emailField->setFocus();
         return false;
     }
@@ -560,7 +527,8 @@ bool SettingsWindow::isPhoneValid() const
 
 bool SettingsWindow::isPostalValid() const
 {
-    if (m_currentCountry.postalDigits <= 0) return true; // alphanumeric = skip validation
+    if (m_currentCountry.postalDigits <= 0)
+        return !ui->postalField->text().trimmed().isEmpty();
     QRegularExpression rx(QString("^\\d{%1}$").arg(m_currentCountry.postalDigits));
     return rx.match(ui->postalField->text().trimmed()).hasMatch();
 }
@@ -609,20 +577,27 @@ void SettingsWindow::onLogoClicked()
 {
     QString filePath = QFileDialog::getOpenFileName(
         this, tr("Select Logo Image"), QString(),
-        "Images (*.png *.jpg *.jpeg *.bmp)");
+        tr("Images (*.png *.jpg *.jpeg *.bmp)"));
     if (filePath.isEmpty()) return;
     m_newLogoSourcePath = filePath;
-    displayLogo(filePath);
+    QPixmap pixmap(filePath);
+    if (pixmap.isNull()) { qWarning() << "Failed to load logo:" << filePath; return; }
+    displayPixmap(pixmap);
 }
 
-void SettingsWindow::displayLogo(const QString& fullPath)
+void SettingsWindow::displayPixmap(const QPixmap& pixmap)
 {
-    QPixmap pixmap(fullPath);
-    if (pixmap.isNull()) { qWarning() << "Failed to load logo:" << fullPath; return; }
+    if (pixmap.isNull()) { showLogoPlaceholder(); return; }
     ui->logoImageLabel->setPixmap(
         pixmap.scaled(ui->logoImageLabel->size(),
                       Qt::KeepAspectRatio, Qt::SmoothTransformation));
     ui->logoImageLabel->setText(QString());
+}
+
+void SettingsWindow::showLogoPlaceholder()
+{
+    ui->logoImageLabel->setPixmap(QPixmap());
+    ui->logoImageLabel->setText(tr("Click to\nupload logo"));
 }
 
 void SettingsWindow::onSaveClicked()   { saveProfile(); }
@@ -636,26 +611,24 @@ void SettingsWindow::loadUsers()
 {
     m_usersModel->removeRows(0, m_usersModel->rowCount());
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::ACCOUNT_SELECT_ALL);
-
-    if (!query.exec()) {
-        qWarning() << "Failed to load users:" << query.lastError().text();
+    QList<DataRow> rows = m_api->select("accounts", {}, "username");
+    if (!m_api->ok()) {
+        qWarning() << "Failed to load users:" << m_api->lastError();
         return;
     }
 
-    while (query.next()) {
-        QString username    = query.value("username").toString();
-        QString displayName = query.value("display_name").toString();
-        QString role        = query.value("role").toString();
-        bool    isActive    = query.value("is_active").toBool();
-        QString lastLogin   = query.value("last_login").toString();
+    for (const DataRow& r : rows) {
+        QString username    = r.value("username").toString();
+        QString displayName = r.value("display_name").toString();
+        QString role        = r.value("role").toString();
+        bool    isActive    = r.value("is_active").toBool();
+        QString lastLogin   = r.value("last_login").toString();
 
         QList<QStandardItem*> row;
 
         auto makeItem = [&](const QString& text) -> QStandardItem* {
             QStandardItem* item = new QStandardItem(text);
-            item->setTextAlignment(Qt::AlignCenter);
+            item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
             item->setData(username, Qt::UserRole);
             if (!isActive) {
                 item->setForeground(QBrush(QColor("#666666")));
@@ -666,7 +639,7 @@ void SettingsWindow::loadUsers()
         row << makeItem(username);
         row << makeItem(displayName);
         row << makeItem(role);
-        row << makeItem(isActive ? tr("Active") : tr("Inactive"));
+        row << makeItem(isActive ? "Active" : "Inactive");
         row << makeItem(lastLogin.isEmpty() ? tr("Never") : lastLogin);
 
         m_usersModel->appendRow(row);
@@ -684,9 +657,9 @@ QString SettingsWindow::selectedUsername() const
 
 void SettingsWindow::onUserAddClicked()
 {
-    UserDialog dialog(m_db, UserDialog::Mode::Add, QString(), this);
+    UserDialog dialog(m_api, UserDialog::Mode::Add, QString(), this);
     if (dialog.exec() == QDialog::Accepted) {
-        QMessageBox::information(this, tr("Success"), tr(SettingsConstants::MSG_USER_ADD_SUCCESS));
+        AppHelpers::showInfo(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_ADD_SUCCESS), tr("Success"));
         loadUsers();
     }
 }
@@ -695,13 +668,13 @@ void SettingsWindow::onUserEditClicked()
 {
     QString username = selectedUsername();
     if (username.isEmpty()) {
-        QMessageBox::warning(this, tr("No Selection"), tr(SettingsConstants::MSG_USER_SELECT));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_SELECT), tr("No Selection"));
         return;
     }
 
-    UserDialog dialog(m_db, UserDialog::Mode::Edit, username, this);
+    UserDialog dialog(m_api, UserDialog::Mode::Edit, username, this);
     if (dialog.exec() == QDialog::Accepted) {
-        QMessageBox::information(this, tr("Success"), tr(SettingsConstants::MSG_USER_EDIT_SUCCESS));
+        AppHelpers::showInfo(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_EDIT_SUCCESS), tr("Success"));
         loadUsers();
     }
 }
@@ -710,49 +683,36 @@ void SettingsWindow::onUserDeleteClicked()
 {
     QString username = selectedUsername();
     if (username.isEmpty()) {
-        QMessageBox::warning(this, tr("No Selection"), tr(SettingsConstants::MSG_USER_SELECT));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_SELECT), tr("No Selection"));
         return;
     }
 
     if (username == m_session->username()) {
-        QMessageBox::warning(this, tr("Not Allowed"), tr(SettingsConstants::MSG_USER_CANNOT_DELETE_SELF));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_CANNOT_DELETE_SELF), tr("Not Allowed"));
         return;
     }
 
-    QSqlQuery countQuery(m_db->database());
-    countQuery.prepare("SELECT COUNT(*) FROM accounts WHERE role = 'Admin'");
-    if (countQuery.exec() && countQuery.next()) {
-        int adminCount = countQuery.value(0).toInt();
+    QList<DataRow> admins = m_api->select("accounts", {{"role", "Admin"}, {"is_active", 1}});
+    int adminCount = m_api->ok() ? admins.size() : 0;
 
-        QSqlQuery roleQuery(m_db->database());
-        roleQuery.prepare("SELECT role FROM accounts WHERE username = ?");
-        roleQuery.addBindValue(username);
-        if (roleQuery.exec() && roleQuery.next()) {
-            QString role = roleQuery.value(0).toString();
-            if (role == "Admin" && adminCount <= 1) {
-                QMessageBox::warning(this, tr("Not Allowed"),
-                                     tr(SettingsConstants::MSG_USER_CANNOT_DELETE_LAST_ADMIN));
-                return;
-            }
+    QList<DataRow> target = m_api->select("accounts", {{"username", username}});
+    if (m_api->ok() && !target.isEmpty()) {
+        QString role = target.first().value("role").toString();
+        if (role == "Admin" && adminCount <= 1) {
+            AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_CANNOT_DELETE_LAST_ADMIN), tr("Not Allowed"));
+            return;
         }
     }
 
-    int confirm = QMessageBox::question(this, tr("Confirm Delete"),
-                                        QString(tr(SettingsConstants::MSG_USER_DELETE_CONFIRM)),
-                                        QMessageBox::Yes | QMessageBox::No);
-    if (confirm != QMessageBox::Yes) return;
+    if (!AppHelpers::confirmAction(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_DELETE_CONFIRM))) return;
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::ACCOUNT_DELETE);
-    query.addBindValue(username);
-
-    if (!query.exec()) {
-        qWarning() << "Failed to delete user:" << query.lastError().text();
-        QMessageBox::warning(this, tr("Error"), tr("Failed to delete user."));
+    if (!m_api->remove("accounts", {{"username", username}})) {
+        qWarning() << "Failed to delete user:" << m_api->lastError();
+        AppHelpers::showWarning(this, tr("Failed to delete user."));
         return;
     }
 
-    QMessageBox::information(this, tr("Deleted"), tr(SettingsConstants::MSG_USER_DELETE_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(SettingsConstants::MSG_USER_DELETE_SUCCESS), tr("Deleted"));
     loadUsers();
 }
 
@@ -780,16 +740,13 @@ void SettingsWindow::updatePermissionsPanel(const QString& username)
         return;
     }
 
-    QSqlQuery query(m_db->database());
-    query.prepare("SELECT role FROM accounts WHERE username = ?");
-    query.addBindValue(username);
-
-    if (!query.exec() || !query.next()) {
+    QList<DataRow> rows = m_api->select("accounts", {{"username", username}});
+    if (!m_api->ok() || rows.isEmpty()) {
         clearPermissionsPanel();
         return;
     }
 
-    QString role = query.value(0).toString();
+    QString role = rows.first().value("role").toString();
 
     if (AccessControl::isAdminRole(role)) {
         ui->userPermissions->setVisible(true);
@@ -809,7 +766,7 @@ void SettingsWindow::updatePermissionsPanel(const QString& username)
     }
 
     ui->userPermissions->setVisible(true);
-    ui->userPermissions->setTitle(tr("Permissions for %1 (%2)").arg(username).arg(role));
+    ui->userPermissions->setTitle(tr("Permissions for %1 (%2)").arg(username, AppHelpers::roleName(role)));
     ui->permissionsSaveBtn->setEnabled(true);
 
     bool isManager = (role == "Manager");
@@ -825,7 +782,13 @@ void SettingsWindow::updatePermissionsPanel(const QString& username)
 
 void SettingsWindow::loadUserPermissions(const QString& username)
 {
-    QMap<QString, bool> permissions = m_permissionManager->loadUserPermissions(username);
+    QMap<QString, bool> permissions;
+    QList<DataRow> rows = m_api->select("user_permissions", {{"username", username}});
+    if (m_api->ok()) {
+        for (const DataRow& row : rows)
+            permissions[row.value("permission_key").toString()] =
+                row.value("is_allowed").toInt() == 1;
+    }
 
     ui->pWithdrawCheck->setChecked(permissions.value(AccessControl::PERMISSION_WITHDRAW_CASH, false));
     ui->pDeleteTicketCheck->setChecked(permissions.value(AccessControl::PERMISSION_DELETE_TICKET, false));
@@ -840,16 +803,30 @@ void SettingsWindow::saveUserPermissions(const QString& username)
         return;
     }
 
-    m_permissionManager->saveUserPermission(username, AccessControl::PERMISSION_WITHDRAW_CASH,
-                                            ui->pWithdrawCheck->isChecked());
-    m_permissionManager->saveUserPermission(username, AccessControl::PERMISSION_DELETE_TICKET,
-                                            ui->pDeleteTicketCheck->isChecked());
-    m_permissionManager->saveUserPermission(username, AccessControl::PERMISSION_DELETE_PRODUCT,
-                                            ui->pDeleteProductCheck->isChecked());
-    m_permissionManager->saveUserPermission(username, AccessControl::PERMISSION_ADD_CATEGORY,
-                                            ui->paddCatCheck->isChecked());
-    m_permissionManager->saveUserPermission(username, AccessControl::PERMISSION_MANAGE_DISCOUNTS,
-                                            ui->pDiscountsCheck->isChecked());
+    const QList<QPair<QString, bool>> perms = {
+        {AccessControl::PERMISSION_WITHDRAW_CASH, ui->pWithdrawCheck->isChecked()},
+        {AccessControl::PERMISSION_DELETE_TICKET, ui->pDeleteTicketCheck->isChecked()},
+        {AccessControl::PERMISSION_DELETE_PRODUCT, ui->pDeleteProductCheck->isChecked()},
+        {AccessControl::PERMISSION_ADD_CATEGORY, ui->paddCatCheck->isChecked()},
+        {AccessControl::PERMISSION_MANAGE_DISCOUNTS, ui->pDiscountsCheck->isChecked()},
+    };
+    // Upsert per key: update, insert if missing.
+    for (const auto& [key, allowed] : perms) {
+        QVariantMap where{{"username", username}, {"permission_key", key}};
+        if (!m_api->update("user_permissions", {{"is_allowed", allowed ? 1 : 0}}, where)
+            || !m_api->ok()) {
+            qWarning() << "Failed to save permission:" << key << m_api->lastError();
+            continue;
+        }
+        QList<DataRow> check = m_api->select("user_permissions", where);
+        if (m_api->ok() && check.isEmpty()) {
+            QVariantMap values{{"username", username},
+                               {"permission_key", key},
+                               {"is_allowed", allowed ? 1 : 0}};
+            if (m_api->insert("user_permissions", values) < 0)
+                qWarning() << "Failed to insert permission:" << key << m_api->lastError();
+        }
+    }
 }
 
 void SettingsWindow::clearPermissionsPanel()
@@ -860,8 +837,6 @@ void SettingsWindow::clearPermissionsPanel()
     ui->pDeleteProductCheck->setChecked(false);
     ui->paddCatCheck->setChecked(false);
     ui->pDiscountsCheck->setChecked(false);
-    ui->pExpensesCheck->setChecked(false);
-    ui->pRecurringCheck->setChecked(false);
 }
 
 void SettingsWindow::onPermissionsSaveClicked()
@@ -872,7 +847,7 @@ void SettingsWindow::onPermissionsSaveClicked()
     }
 
     saveUserPermissions(username);
-    QMessageBox::information(this, tr("Success"), tr("Permissions saved successfully."));
+    AppHelpers::showInfo(this, tr("Permissions saved successfully."), tr("Success"));
 }
 
 // ============================================================================
@@ -881,7 +856,7 @@ void SettingsWindow::onPermissionsSaveClicked()
 
 void SettingsWindow::onLogoutClicked()
 {
-    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId(), m_session->username())) {
+    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId())) {
         return;
     }
     close();
@@ -923,7 +898,7 @@ void SettingsWindow::populatePrinterCombos()
     // Latency spinbox range
     ui->latencySelect->setMinimum(PrinterConstants::LATENCY_MIN);
     ui->latencySelect->setMaximum(PrinterConstants::LATENCY_MAX);
-    ui->latencySelect->setSuffix(" ms");
+    ui->latencySelect->setSuffix(tr(" ms"));
 
     // Paper Size — all common thermal printer widths
     ui->paperSizeSelect->clear();
@@ -931,7 +906,10 @@ void SettingsWindow::populatePrinterCombos()
 
     // Encoding
     ui->encodingSelect->clear();
-    ui->encodingSelect->addItems({"UTF-8", "IBM850", "CP1252", "GB2312"});
+    for (const char* name : {"UTF-8", "IBM850", "CP1252", "GB2312"})
+        ui->encodingSelect->addItem(QString::fromLatin1(name), QString::fromLatin1(name));
+    // Any script (Arabic, Cyrillic, Chinese...) printed as pictures.
+    ui->encodingSelect->addItem(tr("Image (any language)"), "IMAGE");
 }
 
 void SettingsWindow::scanComPorts()
@@ -945,7 +923,7 @@ void SettingsWindow::scanComPorts()
         ui->portSelect->addItem(info.portName());
 
     if (ui->portSelect->count() == 0) {
-        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_NO_PORTS_FOUND));
+        ui->printerStatusLabel->setText(AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_NO_PORTS_FOUND));
     } else {
         const int idx = ui->portSelect->findText(currentPort);
         if (idx >= 0)
@@ -972,7 +950,7 @@ void SettingsWindow::loadPrinterSettings()
     ui->flowSelect->setCurrentText(PrinterConstants::DEFAULT_FLOW_CONTROL);
     ui->latencySelect->setValue(PrinterConstants::DEFAULT_LATENCY);
     ui->paperSizeSelect->setCurrentText(PrinterConstants::DEFAULT_PAPER_SIZE);
-    ui->encodingSelect->setCurrentText(PrinterConstants::DEFAULT_ENCODING);
+    ui->encodingSelect->setCurrentIndex(qMax(0, ui->encodingSelect->findData(QString(PrinterConstants::DEFAULT_ENCODING))));
 
     {
         QSignalBlocker block(ui->printerEnableBox);
@@ -980,71 +958,61 @@ void SettingsWindow::loadPrinterSettings()
     }
     setPrinterControlsEnabled(PrinterConstants::DEFAULT_ENABLED);
 
-    QSqlQuery query(m_db->database());
-    query.exec("SELECT enabled, port, baud_rate, data_bits, parity, stop_bits, flow_control, latency_ms, paper_size, encoding FROM printer_settings WHERE id = 1");
-    if (!query.next())
-        return;
-
-    const bool enabled = query.value(0).toInt() != 0;
+    // Printer config is a per-machine setting.
+    const QVariantMap printer = LocalSettings::load().printer;
+    const bool enabled = printer.value("enabled", 0).toInt() != 0;
     {
         QSignalBlocker block(ui->printerEnableBox);
         ui->printerEnableBox->setChecked(enabled);
     }
     setPrinterControlsEnabled(enabled);
 
-    const QString savedPort = query.value(1).toString();
+    const QString savedPort = printer.value("port").toString();
     const int portIdx = ui->portSelect->findText(savedPort);
     if (portIdx >= 0)
         ui->portSelect->setCurrentIndex(portIdx);
 
-    const int savedBaud = query.value(2).toInt();
+    const int savedBaud = printer.value("baud_rate", PrinterConstants::DEFAULT_BAUD_RATE).toInt();
     const int baudIdx = ui->baudRateSelect->findData(savedBaud);
     if (baudIdx >= 0) ui->baudRateSelect->setCurrentIndex(baudIdx);
 
-    const int savedBits = query.value(3).toInt();
+    const int savedBits = printer.value("data_bits", PrinterConstants::DEFAULT_DATA_BITS).toInt();
     const int bitsIdx = ui->dataBitsSelect->findData(savedBits);
     if (bitsIdx >= 0) ui->dataBitsSelect->setCurrentIndex(bitsIdx);
 
-    ui->paritySelect->setCurrentText(query.value(4).toString());
-    ui->stopBitsSelect->setCurrentText(query.value(5).toString());
-    ui->flowSelect->setCurrentText(query.value(6).toString());
-    ui->latencySelect->setValue(query.value(7).toInt());
-    ui->paperSizeSelect->setCurrentText(query.value(8).toString());
-    ui->encodingSelect->setCurrentText(query.value(9).toString());
+    ui->paritySelect->setCurrentText(printer.value("parity", PrinterConstants::DEFAULT_PARITY).toString());
+    ui->stopBitsSelect->setCurrentText(printer.value("stop_bits", PrinterConstants::DEFAULT_STOP_BITS).toString());
+    ui->flowSelect->setCurrentText(printer.value("flow_control", PrinterConstants::DEFAULT_FLOW_CONTROL).toString());
+    ui->latencySelect->setValue(printer.value("latency_ms", PrinterConstants::DEFAULT_LATENCY).toInt());
+    ui->paperSizeSelect->setCurrentText(printer.value("paper_size", PrinterConstants::DEFAULT_PAPER_SIZE).toString());
+    {
+        const int index = ui->encodingSelect->findData(
+            printer.value("encoding", PrinterConstants::DEFAULT_ENCODING).toString());
+        if (index >= 0)
+            ui->encodingSelect->setCurrentIndex(index);
+    }
 }
 
 void SettingsWindow::savePrinterSettings()
 {
-    QSqlQuery query(m_db->database());
-    query.prepare(R"(
-        UPDATE printer_settings SET
-            enabled = :enabled,
-            port = :port,
-            baud_rate = :baud,
-            data_bits = :bits,
-            parity = :parity,
-            stop_bits = :stop,
-            flow_control = :flow,
-            latency_ms = :latency,
-            paper_size = :paper,
-            encoding = :encoding
-        WHERE id = 1
-    )");
-    query.bindValue(":enabled", ui->printerEnableBox->isChecked() ? 1 : 0);
-    query.bindValue(":port", ui->portSelect->currentText());
-    query.bindValue(":baud", ui->baudRateSelect->currentData().toInt());
-    query.bindValue(":bits", ui->dataBitsSelect->currentData().toInt());
-    query.bindValue(":parity", ui->paritySelect->currentText());
-    query.bindValue(":stop", ui->stopBitsSelect->currentText());
-    query.bindValue(":flow", ui->flowSelect->currentText());
-    query.bindValue(":latency", ui->latencySelect->value());
-    query.bindValue(":paper", ui->paperSizeSelect->currentText());
-    query.bindValue(":encoding", ui->encodingSelect->currentText());
+    LocalSettings local = LocalSettings::load();
+    QVariantMap printer = local.printer;
+    printer["enabled"] = ui->printerEnableBox->isChecked() ? 1 : 0;
+    printer["port"] = ui->portSelect->currentText();
+    printer["baud_rate"] = ui->baudRateSelect->currentData().toInt();
+    printer["data_bits"] = ui->dataBitsSelect->currentData().toInt();
+    printer["parity"] = ui->paritySelect->currentText();
+    printer["stop_bits"] = ui->stopBitsSelect->currentText();
+    printer["flow_control"] = ui->flowSelect->currentText();
+    printer["latency_ms"] = ui->latencySelect->value();
+    printer["paper_size"] = ui->paperSizeSelect->currentText();
+    printer["encoding"] = ui->encodingSelect->currentData().toString();
+    local.printer = printer;
 
-    if (query.exec()) {
-        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_SAVE_SUCCESS));
+    if (local.save()) {
+        ui->printerStatusLabel->setText(AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_SAVE_SUCCESS));
     } else {
-        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_SAVE_FAILED));
+        ui->printerStatusLabel->setText(AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_SAVE_FAILED));
     }
 }
 
@@ -1070,7 +1038,7 @@ void SettingsWindow::onPrinterEnableToggled(bool enabled)
     savePrinterSettings();
 
     if (!enabled)
-        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_DISABLED));
+        ui->printerStatusLabel->setText(AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_DISABLED));
     else
         ui->printerStatusLabel->clear();
 }
@@ -1102,53 +1070,28 @@ void SettingsWindow::setPrinterControlsEnabled(bool enabled)
 void SettingsWindow::onPrintTestBtn()
 {
     if (!ui->printerEnableBox->isChecked()) {
-        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_DISABLED));
+        ui->printerStatusLabel->setText(AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_DISABLED));
         return;
     }
 
     if (ui->portSelect->currentText().isEmpty()) {
-        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_NO_PORT));
+        ui->printerStatusLabel->setText(AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_NO_PORT));
         return;
     }
 
-    if (!m_db || !m_db->isOpen()) {
-        ui->printerStatusLabel->setText(tr(SettingsConstants::MSG_PRINTER_TEST_FAILED));
+    if (!m_api) {
+        ui->printerStatusLabel->setText(AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_TEST_FAILED));
         return;
     }
 
-    ThermalPrinter::ShopInfo shop;
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::PROFILE_SELECT);
-    if (query.exec() && query.next()) {
-        shop.name     = query.value("shop_name").toString();
-        shop.phone    = query.value("phone").toString();
-        shop.email    = query.value("email").toString();
-        shop.logoPath = query.value("logo_path").toString();
-    }
+    const ThermalPrinter::TicketData data = Receipt::sampleTicket(m_api, m_images);
 
-    QList<ThermalPrinter::TicketItem> items;
-    items << ThermalPrinter::TicketItem{"Test Item A", 2, 5.00};
-    items << ThermalPrinter::TicketItem{"Test Item B", 1, 12.50};
-    items << ThermalPrinter::TicketItem{"Test Item C", 3, 3.75};
-
-    const double subtotal       = 2*5.00 + 1*12.50 + 3*3.75;
-    const double discountAmount = 3.00;
-    const double totalAfterDisc = subtotal - discountAmount;
-
-    ThermalPrinter::TicketData data;
-    data.shop           = shop;
-    data.items          = items;
-    data.subtotal       = subtotal;
-    data.discountAmount = discountAmount;
-    data.total          = totalAfterDisc;
-    data.isUnpaid       = false;
-
-    ThermalPrinter printer(m_db->database());
+    ThermalPrinter printer(LocalSettings::load().printer);
     const bool ok = printer.print(data);
 
     ui->printerStatusLabel->setText(
-        ok ? tr(SettingsConstants::MSG_PRINTER_TEST_SENT)
-           : tr(SettingsConstants::MSG_PRINTER_TEST_FAILED));
+        ok ? AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_TEST_SENT)
+           : AppHelpers::trMsg(SettingsConstants::MSG_PRINTER_TEST_FAILED));
 }
 // ============================================================================
 // APP SETTINGS — THEME
@@ -1159,162 +1102,300 @@ void SettingsWindow::loadAppSettings()
     // Block signals so setting combos don't trigger saveAppSettings
     QSignalBlocker blockColor(ui->colorSelect);
     QSignalBlocker blockFont(ui->fontSelect);
-    QSignalBlocker blockBg(ui->bgSelect);
     QSignalBlocker blockOOS(ui->OOSCheckBox);
+    QSignalBlocker blockAnimations(ui->animationsCheckBox);
+    QSignalBlocker blockNotifSound(ui->notifSoundCheckBox);
+    QSignalBlocker blockScale(ui->bgScaleSelect);
+    QSignalBlocker blockDim(ui->bgDimSlider);
 
-    QSqlDatabase db = m_db->database();
-    const StyleManager::ColorScheme color = StyleManager::loadColorScheme(db);
-    ui->colorSelect->setCurrentText(
-        color == StyleManager::ColorScheme::Light ? "Light" : "Dark");
+    LocalSettings local = LocalSettings::load();
+    ui->colorSelect->setCurrentIndex(qMax(0, ui->colorSelect->findData(
+        local.colorScheme == "light" ? "light" : "dark")));
+    ui->fontSelect->setCurrentIndex(qMax(0, ui->fontSelect->findData(local.fontSize)));
 
-    const StyleManager::FontSize font = StyleManager::loadFontSize(db);
-    switch (font) {
-    case StyleManager::FontSize::Medium: ui->fontSelect->setCurrentText("Medium"); break;
-    case StyleManager::FontSize::Large:  ui->fontSelect->setCurrentText("Large");  break;
-    default:                             ui->fontSelect->setCurrentText("Small");  break;
-    }
-
-    const StyleManager::Background bg = StyleManager::loadBackground(db);
-    switch (bg) {
-    case StyleManager::Background::Caramel: ui->bgSelect->setCurrentText("Caramel"); break;
-    case StyleManager::Background::Black:   ui->bgSelect->setCurrentText("Black");   break;
-    case StyleManager::Background::Blue:    ui->bgSelect->setCurrentText("Blue");    break;
-    default:                                ui->bgSelect->setCurrentText("Default"); break;
-    }
-
-    // OOS setting — default true (show out-of-stock items) if key not present
-    bool showOOS = true;
-    QSqlQuery query(db);
-    query.exec("SELECT show_oos_products FROM app_settings WHERE id = 1");
-    if (query.next()) {
-        showOOS = query.value(0).toInt() != 0;
-    }
-    ui->OOSCheckBox->setChecked(showOOS);
+    ui->OOSCheckBox->setChecked(local.showOosProducts);
+    ui->animationsCheckBox->setChecked(local.animationsEnabled);
+    ui->notifSoundCheckBox->setChecked(local.notificationSound);
+    ui->bgScaleSelect->setCurrentIndex(
+        local.backgroundScale == "stretch" ? 1
+        : local.backgroundScale == "fit"   ? 2
+                                           : 0);
+    ui->bgDimSlider->setValue(local.backgroundDim);
+    ui->bgDimValue->setText(QString("%1%").arg(local.backgroundDim));
+    updateBgSwatch(local.backgroundColor);
+    updateBgImagePreview();
 }
+
+namespace {
+StyleManager::ColorScheme settingsColor(const QString& key)
+{
+    return (key == "light") ? StyleManager::ColorScheme::Light
+                            : StyleManager::ColorScheme::Dark;
+}
+StyleManager::FontSize settingsFont(const QString& key)
+{
+    if (key == "medium") return StyleManager::FontSize::Medium;
+    if (key == "large")  return StyleManager::FontSize::Large;
+    return StyleManager::FontSize::Small;
+}
+QString settingsColorName(StyleManager::ColorScheme color)
+{
+    return (color == StyleManager::ColorScheme::Light) ? "light" : "dark";
+}
+QString settingsFontName(StyleManager::FontSize font)
+{
+    switch (font) {
+    case StyleManager::FontSize::Medium: return "medium";
+    case StyleManager::FontSize::Large:  return "large";
+    default:                             return "small";
+    }
+}
+} // namespace
 
 void SettingsWindow::saveAppSettings()
 {
-    QSqlDatabase db = m_db->database();
+    LocalSettings local = LocalSettings::load();
 
-    // Color
-    const StyleManager::ColorScheme color =
-        (ui->colorSelect->currentText() == "Light")
-            ? StyleManager::ColorScheme::Light
-            : StyleManager::ColorScheme::Dark;
+    const StyleManager::ColorScheme color = settingsColor(ui->colorSelect->currentData().toString());
+    const StyleManager::FontSize font = settingsFont(ui->fontSelect->currentData().toString());
 
-    // Font
-    StyleManager::FontSize font = StyleManager::FontSize::Small;
-    const QString fontText = ui->fontSelect->currentText();
-    if      (fontText == "Medium") font = StyleManager::FontSize::Medium;
-    else if (fontText == "Large")  font = StyleManager::FontSize::Large;
+    local.colorScheme = settingsColorName(color);
+    local.fontSize = settingsFontName(font);
+    local.showOosProducts = ui->OOSCheckBox->isChecked();
+    local.animationsEnabled = ui->animationsCheckBox->isChecked();
+    local.notificationSound = ui->notifSoundCheckBox->isChecked();
+    local.save();
 
-    // Background
-    StyleManager::Background bg = StyleManager::Background::Default;
-    const QString bgText = ui->bgSelect->currentText();
-    if      (bgText == "Caramel") bg = StyleManager::Background::Caramel;
-    else if (bgText == "Black")   bg = StyleManager::Background::Black;
-    else if (bgText == "Blue")    bg = StyleManager::Background::Blue;
-
-    StyleManager::saveColorScheme(color, db);
-    StyleManager::saveFontSize(font, db);
-    StyleManager::saveBackground(bg, db);
-    StyleManager::applyToAllWindows(db);
-
-    // Save OOS setting to database
-    QSqlQuery query(db);
-    query.prepare("UPDATE app_settings SET show_oos_products = :oos WHERE id = 1");
-    query.bindValue(":oos", ui->OOSCheckBox->isChecked() ? 1 : 0);
-    query.exec();
+    StyleManager::applyTheme(this, color, font);
+    updateIcons();
 }
 
 // ============================================================================
-// APP SETTINGS — REGIONAL (Country / Currency)
+// APP SETTINGS — BACKGROUND COLOR (light theme tint)
+// ============================================================================
+
+void SettingsWindow::onBgColorClicked()
+{
+    const QColor current(LocalSettings::load().backgroundColor);
+    const QColor chosen = QColorDialog::getColor(
+        current.isValid() ? current : QColor("#E8D8BC"),
+        this, tr("Pick a background color"));
+    if (chosen.isValid())
+        applyBackgroundColor(chosen);
+}
+
+// Re-apply the current theme to this window — installs the background image
+// (if any) through StyleManager; otherwise the gradient / color tint shows.
+void SettingsWindow::reapplyThemeToSelf()
+{
+    const LocalSettings local = LocalSettings::load();
+    const StyleManager::ColorScheme cs = (local.colorScheme == "light")
+        ? StyleManager::ColorScheme::Light : StyleManager::ColorScheme::Dark;
+    StyleManager::FontSize fs;
+    if (local.fontSize == "large")       fs = StyleManager::FontSize::Large;
+    else if (local.fontSize == "small")  fs = StyleManager::FontSize::Small;
+    else                                 fs = StyleManager::FontSize::Medium;
+    StyleManager::applyTheme(this, cs, fs);
+}
+
+void SettingsWindow::applyBackgroundColor(const QColor& color)
+{
+    LocalSettings local = LocalSettings::load();
+    local.backgroundColor = color.isValid() ? color.name() : QString();
+    local.save();
+
+    // Re-apply the theme so the new background tint takes effect immediately.
+    reapplyThemeToSelf();
+
+    updateBgSwatch(local.backgroundColor);
+}
+
+void SettingsWindow::updateBgSwatch(const QString& hex)
+{
+    const QColor c(hex);
+    const QString fill = c.isValid() ? c.name() : QStringLiteral("#E8D8BC");
+    ui->bgColorBtn->setStyleSheet(
+        QStringLiteral("background-color: %1; border: 1px solid rgba(0,0,0,0.25);"
+                       " min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px;"
+                       " padding: 0; border-radius: 14px;").arg(fill));
+}
+
+// ============================================================================
+// APP SETTINGS — BACKGROUND IMAGE (copied into app data, scaled to cover)
+// ============================================================================
+
+void SettingsWindow::onBgImageChooseClicked()
+{
+    const QString file = QFileDialog::getOpenFileName(
+        this, tr("Choose background image"), QString(),
+        tr("Images (*.png *.jpg *.jpeg *.bmp *.webp);;All files (*)"));
+    if (file.isEmpty())
+        return;
+
+    // Copy the file into app data so the background survives the source being
+    // moved or deleted, and so every app reads the same stable path.
+    const QFileInfo fi(file);
+    const QString ext = fi.suffix().isEmpty() ? QStringLiteral("png")
+                                              : fi.suffix().toLower();
+    const QString dest = POSConfig::getAppDataPath() + "background." + ext;
+
+    // Drop stale copies from other formats first (QFile::copy refuses an
+    // existing destination).
+    for (const char* stale : {".png", ".jpg", ".jpeg", ".bmp", ".webp"}) {
+        const QString p = POSConfig::getAppDataPath() + "background" + stale;
+        if (p != dest && QFile::exists(p))
+            QFile::remove(p);
+    }
+    if (QFile::exists(dest))
+        QFile::remove(dest);
+    if (!QFile::copy(file, dest)) {
+        AppHelpers::showWarning(this, tr("Could not copy the selected image into the app data folder."), tr("Background image"));
+        return;
+    }
+    // A copy keeps the source's permissions; a read-only file could not be
+    // replaced or removed later on Windows.
+    QFile::setPermissions(dest, QFile::permissions(dest) | QFile::WriteOwner);
+
+    LocalSettings local = LocalSettings::load();
+    local.backgroundImage = dest;
+    local.save();
+
+    reapplyThemeToSelf();      // installs the scaled image behind this window
+    updateBgImagePreview();
+}
+
+void SettingsWindow::onBgImageRemoveClicked()
+{
+    LocalSettings local = LocalSettings::load();
+    const QString old = local.backgroundImage;
+    local.backgroundImage.clear();
+    local.save();
+    if (!old.isEmpty())
+        QFile::remove(old);    // clean up the copy we made
+
+    reapplyThemeToSelf();      // uninstalls the image -> color fallback shows
+    updateBgImagePreview();
+}
+
+// Save the fill mode + dim scrim from the widgets and re-apply live.
+void SettingsWindow::applyBackgroundImageOptions()
+{
+    LocalSettings local = LocalSettings::load();
+    const char* keys[] = {"cover", "stretch", "fit"};
+    local.backgroundScale = keys[qBound(0, ui->bgScaleSelect->currentIndex(), 2)];
+    local.backgroundDim = qBound(0, ui->bgDimSlider->value(), 100);
+    local.save();
+
+    ui->bgDimValue->setText(QString("%1%").arg(local.backgroundDim));
+    reapplyThemeToSelf();
+}
+
+void SettingsWindow::updateBgImagePreview()
+{
+    const QPixmap pix(LocalSettings::load().backgroundImage);
+    if (pix.isNull()) {
+        ui->bgImagePreview->setPixmap(QPixmap());
+        ui->bgImagePreview->setText(tr("None"));
+        ui->bgImagePreview->setStyleSheet(
+            QStringLiteral("color: #8a8a8a; font-size: 10px;"
+                           " border: 1px dashed rgba(0,0,0,0.3);"
+                           " border-radius: 6px;"));
+    } else {
+        ui->bgImagePreview->setText(QString());
+        ui->bgImagePreview->setStyleSheet(
+            QStringLiteral("border: 1px solid rgba(0,0,0,0.3);"
+                           " border-radius: 6px;"));
+        // Fixed thumb size: the label may not be laid out yet when this runs.
+        ui->bgImagePreview->setPixmap(pix.scaled(QSize(56, 30),
+                                                 Qt::KeepAspectRatio,
+                                                 Qt::SmoothTransformation));
+    }
+}
+
+// ============================================================================
+// REGION — COUNTRY & CURRENCY
 // ============================================================================
 
 void SettingsWindow::populateCountryCurrencyCombos()
 {
-    // Populate country combo
-    ui->countrySelect->clear();
-    const auto& countries = CountryData::countries();
-    for (const auto& c : countries) {
-        ui->countrySelect->addItem(c.name + " (" + c.code + ")", c.code);
-    }
+    QSignalBlocker blockCountry(m_countrySelect);
+    QSignalBlocker blockCurrency(m_currencySelect);
 
-    // Populate currency combo with unique currencies
-    ui->currencySelect->clear();
+    m_countrySelect->clear();
+    const auto& countries = CountryData::countries();
+    for (const auto& c : countries)
+        m_countrySelect->addItem(c.name + " (" + c.code + ")", c.code);
+
+    // Each currency once.
+    m_currencySelect->clear();
     QSet<QString> seen;
     for (const auto& c : countries) {
         if (!seen.contains(c.currency)) {
             seen.insert(c.currency);
-            ui->currencySelect->addItem(c.currency, c.currency);
+            m_currencySelect->addItem(c.currency, c.currency);
         }
     }
 }
 
 void SettingsWindow::loadCountryCurrency()
 {
-    QSignalBlocker blockCountry(ui->countrySelect);
-    QSignalBlocker blockCurrency(ui->currencySelect);
+    QSignalBlocker blockCountry(m_countrySelect);
+    QSignalBlocker blockCurrency(m_currencySelect);
 
-    QSqlQuery query(m_db->database());
-    query.prepare("SELECT country, currency FROM app_settings WHERE id = 1");
-    if (query.exec() && query.next()) {
-        QString countryCode = query.value("country").toString().trimmed();
-        QString currencyCode = query.value("currency").toString().trimmed();
-
-        if (countryCode.isEmpty()) countryCode = "TN";
-        if (currencyCode.isEmpty()) currencyCode = "TND";
-
-        m_currentCountry = CountryData::findByCode(countryCode);
-
-        // Set country combo
-        int countryIdx = ui->countrySelect->findData(countryCode);
-        if (countryIdx >= 0) ui->countrySelect->setCurrentIndex(countryIdx);
-
-        // Set currency combo
-        int currencyIdx = ui->currencySelect->findData(currencyCode);
-        if (currencyIdx >= 0) ui->currencySelect->setCurrentIndex(currencyIdx);
-    } else {
-        m_currentCountry = CountryData::defaultCountry();
+    QSqlQuery query(LocalDb::db());
+    QString countryCode = "TN";
+    QString currencyCode = "TND";
+    if (query.exec("SELECT country, currency FROM app_settings WHERE id = 1") && query.next()) {
+        if (!query.value(0).toString().trimmed().isEmpty())
+            countryCode = query.value(0).toString().trimmed();
+        if (!query.value(1).toString().trimmed().isEmpty())
+            currencyCode = query.value(1).toString().trimmed();
     }
+    m_currentCountry = CountryData::findByCode(countryCode);
+
+    const int countryIdx = m_countrySelect->findData(countryCode);
+    if (countryIdx >= 0) m_countrySelect->setCurrentIndex(countryIdx);
+    const int currencyIdx = m_currencySelect->findData(currencyCode);
+    if (currencyIdx >= 0) m_currencySelect->setCurrentIndex(currencyIdx);
 
     updateRegionalFields();
+    // The profile's phone number was split with the default prefix: reload it.
+    loadProfile();
 }
 
 void SettingsWindow::saveCountryCurrency()
 {
-    QString countryCode = ui->countrySelect->currentData().toString();
-    QString currencyCode = ui->currencySelect->currentData().toString();
+    const QString countryCode = m_countrySelect->currentData().toString();
+    const QString currencyCode = m_currencySelect->currentData().toString();
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::APP_SETTINGS_UPDATE_CURRENCY);
+    QSqlQuery query(LocalDb::db());
+    query.prepare("UPDATE app_settings SET country = ?, currency = ? WHERE id = 1");
     query.addBindValue(countryCode.isEmpty() ? QVariant() : QVariant(countryCode));
     query.addBindValue(currencyCode.isEmpty() ? QVariant() : QVariant(currencyCode));
-    query.exec();
+    if (!query.exec())
+        qWarning() << "Failed to save country/currency:" << query.lastError().text();
 
-    // Reload currency config globally
-    AppHelpers::loadCurrencyConfig(m_db->database());
+    // Prices in this window follow the new currency at once; the other apps
+    // pick it up the next time they open.
+    AppHelpers::loadCurrencyConfig(LocalDb::db());
 }
 
 void SettingsWindow::onCountryChanged(int index)
 {
     if (index < 0) return;
 
-    QString countryCode = ui->countrySelect->currentData().toString();
-    m_currentCountry = CountryData::findByCode(countryCode);
+    m_currentCountry = CountryData::findByCode(m_countrySelect->currentData().toString());
 
-    // Auto-select default currency for this country (without triggering onCurrencyChanged save)
+    // The country's usual currency, without saving twice.
     {
-        QSignalBlocker block(ui->currencySelect);
-        int curIdx = ui->currencySelect->findData(m_currentCountry.currency);
-        if (curIdx >= 0) ui->currencySelect->setCurrentIndex(curIdx);
+        QSignalBlocker block(m_currencySelect);
+        const int curIdx = m_currencySelect->findData(m_currentCountry.currency);
+        if (curIdx >= 0) m_currencySelect->setCurrentIndex(curIdx);
     }
 
     updateRegionalFields();
-
-    // Re-validate phone with new digit count
     onPhoneChanged(ui->phoneField->text());
-
+    onPostalChanged(ui->postalField->text());
     saveCountryCurrency();
 }
 
@@ -1326,16 +1407,13 @@ void SettingsWindow::onCurrencyChanged(int index)
 
 void SettingsWindow::updateRegionalFields()
 {
-    // Phone prefix
-    ui->phonePrefixValue->setText(m_currentCountry.phoneCode);
+    m_phonePrefix->setText(m_currentCountry.phoneCode);
 
-    // Phone validator
     ui->phoneField->setValidator(new QRegularExpressionValidator(
         QRegularExpression(QString("^\\d{0,%1}$").arg(m_currentCountry.phoneDigits)), this));
     ui->phoneField->setMaxLength(m_currentCountry.phoneDigits);
     ui->phoneField->setPlaceholderText(tr("%1 digits").arg(m_currentCountry.phoneDigits));
 
-    // Postal code validator
     if (m_currentCountry.postalDigits > 0) {
         ui->postalField->setValidator(new QRegularExpressionValidator(
             QRegularExpression(QString("^\\d{0,%1}$").arg(m_currentCountry.postalDigits)), this));
@@ -1349,96 +1427,94 @@ void SettingsWindow::updateRegionalFields()
 }
 
 // ============================================================================
-// APP SETTINGS — LANGUAGE
+// LANGUAGE
 // ============================================================================
 
 void SettingsWindow::populateLanguageCombo()
 {
-    QSignalBlocker block(ui->languageSelect);
-    ui->languageSelect->clear();
-    const auto& languages = TranslationManager::instance().availableLanguages();
-    for (const auto& lang : languages) {
-        ui->languageSelect->addItem(lang.name, lang.code);
-    }
+    QSignalBlocker block(m_languageSelect);
+    m_languageSelect->clear();
+    for (const auto& lang : TranslationManager::instance().availableLanguages())
+        m_languageSelect->addItem(lang.name, lang.code);
 }
 
 void SettingsWindow::loadLanguage()
 {
-    QSignalBlocker block(ui->languageSelect);
-
-    QString currentLang = TranslationManager::instance().currentLanguage();
-    int idx = ui->languageSelect->findData(currentLang);
-    if (idx >= 0) {
-        ui->languageSelect->setCurrentIndex(idx);
-    }
-}
-
-void SettingsWindow::saveLanguage()
-{
-    QString langCode = ui->languageSelect->currentData().toString();
-    TranslationManager::instance().loadLanguage(langCode);
+    QSignalBlocker block(m_languageSelect);
+    const int idx = m_languageSelect->findData(TranslationManager::instance().currentLanguage());
+    if (idx >= 0)
+        m_languageSelect->setCurrentIndex(idx);
 }
 
 void SettingsWindow::onLanguageChanged(int index)
 {
     if (index < 0) return;
-    saveLanguage();
+    const QString langCode = m_languageSelect->currentData().toString();
+    if (langCode == TranslationManager::instance().currentLanguage())
+        return;
+    TranslationManager::instance().loadLanguage(langCode);
+
+    // Every window is built in the language it opens with: reopen Settings
+    // so all of it switches, and let the user know the other apps follow
+    // the next time they open.
+    AppHelpers::showInfo(this,
+        tr("The language has been changed.\n\nSettings will reopen now. Other POSBox apps use the new "
+           "language the next time they open."),
+        tr("Language"));
+    const QStringList args = QCoreApplication::arguments().mid(1);
+    if (QProcess::startDetached(QCoreApplication::applicationFilePath(), args,
+                                QCoreApplication::applicationDirPath())) {
+        // The new instance must not see this one as already running.
+        AppLock::clear("settings.lock");
+        QCoreApplication::quit();
+    }
 }
 
 // ============================================================================
-// DATABASE — SYNC PATH
+// BACKUP & RESTORE (local, manual)
 // ============================================================================
+// A backup is one zip of the whole app-data folder (database, logo, product
+// pictures, background image) written to the chosen folder. Restore puts a
+// backup's files back and closes every POSBox app.
 
 void SettingsWindow::loadSyncPath()
 {
-    QSqlQuery query(m_db->database());
-    query.exec("SELECT sync_path, last_backup FROM app_settings WHERE id = 1");
-    if (query.next()) {
-        QString syncPath = query.value(0).toString();
-        if (!syncPath.isEmpty())
-            ui->syncPathPath->setText(syncPath);
-
-        QString lastSync = query.value(1).toString();
-        if (!lastSync.isEmpty())
-            ui->lastSyncLabel->setText(tr("Last backup: ") + lastSync);
-        else
-            ui->lastSyncLabel->setText(tr("Last backup: Never"));
+    QSqlQuery query(LocalDb::db());
+    if (query.exec("SELECT sync_path, last_backup FROM app_settings WHERE id = 1") && query.next()) {
+        m_syncPathEdit->setText(query.value(0).toString());
+        const QString lastBackup = query.value(1).toString();
+        m_lastBackupLabel->setText(lastBackup.isEmpty() ? tr("Last backup: Never")
+                                                        : tr("Last backup: %1").arg(lastBackup));
+    } else {
+        m_lastBackupLabel->setText(tr("Last backup: Never"));
     }
 }
 
 void SettingsWindow::saveSyncPath(const QString& path)
 {
-    QSqlQuery query(m_db->database());
-    query.prepare("UPDATE app_settings SET sync_path = :path WHERE id = 1");
-    query.bindValue(":path", path);
+    QSqlQuery query(LocalDb::db());
+    query.prepare("UPDATE app_settings SET sync_path = ? WHERE id = 1");
+    query.addBindValue(path);
     query.exec();
 }
 
 void SettingsWindow::onSyncPathBrowseClicked()
 {
+    const QString current = m_syncPathEdit->text().trimmed();
     const QString dir = QFileDialog::getExistingDirectory(
-        this, tr("Select Backup Folder"),
-        ui->syncPathPath->text().isEmpty()
-            ? QDir::homePath()
-            : ui->syncPathPath->text());
-
+        this, tr("Select Backup Folder"), current.isEmpty() ? QDir::homePath() : current);
     if (dir.isEmpty()) return;
 
-    ui->syncPathPath->setText(dir);
+    m_syncPathEdit->setText(dir);
     saveSyncPath(dir);
 }
 
-// ============================================================================
-// DATABASE — HELPERS
-// ============================================================================
-
-QString SettingsWindow::sevenZipPath() const
+QString SettingsWindow::zipToolPath() const
 {
 #ifdef Q_OS_WIN
     const QStringList paths = {
         "C:/Program Files/7-Zip/7z.exe",
         "C:/Program Files (x86)/7-Zip/7z.exe",
-        "C:/Program Files/7-Zip/7z.exe",
     };
     for (const QString& p : paths) {
         if (QFile::exists(p)) return p;
@@ -1449,195 +1525,140 @@ QString SettingsWindow::sevenZipPath() const
 #endif
 }
 
-bool SettingsWindow::runZipProcess(const QStringList& args, const QString& toolName, QString* errorOut)
+bool SettingsWindow::runZipProcess(const QStringList& args, const QString& tool, QString* errorOut,
+                                   const QString& workingDir)
 {
     QProcess process;
-    process.start(toolName, args);
+    if (!workingDir.isEmpty())
+        process.setWorkingDirectory(workingDir);
+    process.start(tool, args);
 
     if (!process.waitForStarted(5000)) {
-        const QString err = "Failed to start " + toolName + ". Is it installed?";
-        qWarning() << "runZipProcess:" << err;
-        if (errorOut) *errorOut = err;
+        if (errorOut) *errorOut = tr("Could not start %1. Is it installed?").arg(tool);
         return false;
     }
-
-    if (!process.waitForFinished(60000)) {
-        const QString err = "Process timed out";
-        qWarning() << "runZipProcess:" << toolName << err;
-        if (errorOut) *errorOut = err;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const bool finished = process.waitForFinished(120000);
+    QApplication::restoreOverrideCursor();
+    if (!finished) {
+        if (errorOut) *errorOut = tr("The operation took too long.");
         process.kill();
         return false;
     }
-
-    const int exitCode = process.exitCode();
-    if (exitCode != 0) {
-        const QString err = QString::fromLocal8Bit(process.readAllStandardError());
-        qWarning() << "runZipProcess:" << toolName << "exited with code" << exitCode << err;
-        if (errorOut) *errorOut = err.isEmpty() ? QString("Exited with code %1").arg(exitCode) : err;
+    if (process.exitCode() != 0) {
+        const QString err = QString::fromLocal8Bit(process.readAllStandardError()).trimmed();
+        if (errorOut) *errorOut = err.isEmpty() ? tr("Exited with code %1").arg(process.exitCode()) : err;
         return false;
     }
-
     return true;
 }
 
 bool SettingsWindow::validateBackupZip(const QString& zipPath)
 {
-    // List zip contents and check for the two required marker files
     QProcess process;
-    QStringList args;
-
 #ifdef Q_OS_WIN
-    args << "l" << zipPath;
-    process.start(sevenZipPath(), args);
+    process.start(zipToolPath(), {"l", zipPath});
 #else
-    args << "-l" << zipPath;
-    process.start("unzip", args);
+    process.start("unzip", {"-l", zipPath});
 #endif
-
     if (!process.waitForStarted(5000) || !process.waitForFinished(15000))
         return false;
 
+    // A POSBox backup always holds the database.
     const QString output = QString::fromLocal8Bit(process.readAllStandardOutput());
-    const bool hasDb       = output.contains(SettingsConstants::BACKUP_MARKER_DB);
-    const bool hasSettings = output.contains(SettingsConstants::BACKUP_MARKER_SETTINGS);
-
-    return hasDb && hasSettings;
+    return output.contains(SettingsConstants::BACKUP_MARKER_DB);
 }
-
-// ============================================================================
-// DATABASE — BACKUP
-// ============================================================================
 
 void SettingsWindow::onBackupClicked()
 {
-    const QString syncPath = ui->syncPathPath->text().trimmed();
+    const QString syncPath = m_syncPathEdit->text().trimmed();
     if (syncPath.isEmpty()) {
-        QMessageBox::warning(this, tr("No Backup Folder"),
-                             tr(SettingsConstants::MSG_BACKUP_PATH_MISSING));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_BACKUP_PATH_MISSING), tr("No Backup Folder"));
         return;
     }
-
     if (!QDir(syncPath).exists()) {
-        QMessageBox::warning(this, tr("Folder Not Found"),
-                             tr("The backup folder does not exist. Please select a valid folder."));
+        AppHelpers::showWarning(this, tr("The backup folder does not exist. Please select a valid folder."),
+                                tr("Folder Not Found"));
         return;
     }
 
     const QString dataPath  = POSConfig::getAppDataPath();
     const QString outputZip = syncPath + "/" + SettingsConstants::BACKUP_FILENAME;
 
-    // Delete existing backup so we always have exactly one
+    // Always exactly one backup file in the folder.
     if (QFile::exists(outputZip))
         QFile::remove(outputZip);
 
-    bool ok = false;
-
+    QString errMsg;
 #ifdef Q_OS_WIN
-    // 7z a -tzip "output.zip" "C:\path\to\POSBox\*"
     const QStringList args = {
         "a", "-tzip",
         QDir::toNativeSeparators(outputZip),
-        QDir::toNativeSeparators(dataPath + "/*")
+        QDir::toNativeSeparators(dataPath + "*")
     };
-    const QString tool = sevenZipPath();
-    QString errMsg;
-    ok = runZipProcess(args, tool, &errMsg);
-    if (!ok) {
-        QMessageBox::warning(this, tr("Backup Failed"),
-                             QString("Failed to create backup archive (7-Zip).\n\n%1\n\nMake sure 7-Zip is installed at:\n- C:/Program Files/7-Zip/7z.exe\n- C:/Program Files (x86)/7-Zip/7z.exe")
-                             .arg(errMsg));
+    if (!runZipProcess(args, zipToolPath(), &errMsg)) {
+        AppHelpers::showError(this,
+            tr("Failed to create the backup archive (7-Zip).\n\n%1\n\nMake sure 7-Zip is installed.").arg(errMsg),
+            tr("Backup Failed"));
         return;
     }
 #else
-    // zip -r "output.zip" "." from inside the data directory
-    QProcess process;
-    process.setWorkingDirectory(dataPath);
-    const QStringList args = { "-r", outputZip, "." };
-    process.start("zip", args);
-    if (!process.waitForStarted(5000) || !process.waitForFinished(60000)
-        || process.exitCode() != 0) {
-        QMessageBox::warning(this, tr("Backup Failed"),
-                             QString(tr(SettingsConstants::MSG_BACKUP_ZIP_FAILED)).arg("zip"));
+    if (!runZipProcess({"-r", outputZip, "."}, "zip", &errMsg, dataPath)) {
+        AppHelpers::showError(this, AppHelpers::trMsg(SettingsConstants::MSG_BACKUP_ZIP_FAILED).arg("zip") + "\n\n" + errMsg,
+                              tr("Backup Failed"));
         return;
     }
-    ok = true;
 #endif
 
-    if (ok) {
-        // Save timestamp to database
-        const QString timestamp = QDateTime::currentDateTime()
-                                      .toString("yyyy-MM-dd HH:mm");
+    const QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm");
+    QSqlQuery query(LocalDb::db());
+    query.prepare("UPDATE app_settings SET last_backup = ? WHERE id = 1");
+    query.addBindValue(timestamp);
+    query.exec();
 
-        QSqlQuery query(m_db->database());
-        query.prepare("UPDATE app_settings SET last_backup = :backup WHERE id = 1");
-        query.bindValue(":backup", timestamp);
-        query.exec();
-
-        ui->lastSyncLabel->setText(tr("Last backup: ") + timestamp);
-        QMessageBox::information(this, tr("Backup Complete"),
-                                 tr(SettingsConstants::MSG_BACKUP_SUCCESS));
-    }
+    m_lastBackupLabel->setText(tr("Last backup: %1").arg(timestamp));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(SettingsConstants::MSG_BACKUP_SUCCESS), tr("Backup Complete"));
 }
-
-// ============================================================================
-// DATABASE — IMPORT
-// ============================================================================
 
 void SettingsWindow::onImportClicked()
 {
-    // 1 — Pick zip file
+    const QString start = m_syncPathEdit->text().trimmed();
     const QString zipPath = QFileDialog::getOpenFileName(
-        this, tr("Select POSBox Backup"),
-        ui->syncPathPath->text().isEmpty()
-            ? QDir::homePath()
-            : ui->syncPathPath->text(),
-        "POSBox Backup (*.zip)");
-
+        this, tr("Select POSBox Backup"), start.isEmpty() ? QDir::homePath() : start,
+        tr("POSBox Backup (*.zip)"));
     if (zipPath.isEmpty()) return;
 
-    // 2 — Validate it's a real POSBox backup
     if (!validateBackupZip(zipPath)) {
-        QMessageBox::warning(this, tr("Invalid Backup"),
-                             tr(SettingsConstants::MSG_IMPORT_INVALID_ZIP));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(SettingsConstants::MSG_IMPORT_INVALID_ZIP), tr("Invalid Backup"));
         return;
     }
 
-    // 3 — Confirm
-    const int confirm = QMessageBox::warning(
-        this, tr("Confirm Import"),
-        tr(SettingsConstants::MSG_IMPORT_CONFIRM),
-        QMessageBox::Yes | QMessageBox::No);
+    if (!AppHelpers::confirmAction(this, AppHelpers::trMsg(SettingsConstants::MSG_IMPORT_CONFIRM), tr("Restore Backup")))
+        return;
 
-    if (confirm != QMessageBox::Yes) return;
-
-    // 4 — Extract into app data folder
+    // The database is replaced underneath: release this app's connection.
     const QString dataPath = POSConfig::getAppDataPath();
-    bool ok = false;
-
+    QString errMsg;
 #ifdef Q_OS_WIN
-    // 7z x "file.zip" -o"dest" -y  (overwrite without prompting)
     const QStringList args = {
-        "x",
-        QDir::toNativeSeparators(zipPath),
-        "-o" + QDir::toNativeSeparators(dataPath),
-        "-y"
+        "x", QDir::toNativeSeparators(zipPath),
+        "-o" + QDir::toNativeSeparators(dataPath), "-y"
     };
-    ok = runZipProcess(args, sevenZipPath(), nullptr);
+    const bool ok = runZipProcess(args, zipToolPath(), &errMsg);
 #else
-    // unzip -o "file.zip" -d "dest"
-    const QStringList args = { "-o", zipPath, "-d", dataPath };
-    ok = runZipProcess(args, "unzip", nullptr);
+    const bool ok = runZipProcess({"-o", zipPath, "-d", dataPath}, "unzip", &errMsg);
 #endif
 
     if (!ok) {
-        QMessageBox::warning(this, tr("Import Failed"),
-                             tr(SettingsConstants::MSG_IMPORT_FAILED));
+        AppHelpers::showError(this, AppHelpers::trMsg(SettingsConstants::MSG_IMPORT_FAILED) + "\n\n" + errMsg,
+                              tr("Import Failed"));
         return;
     }
 
-    // 5 — Success: notify and quit
-    QMessageBox::information(this, tr("Import Successful"),
-                             tr(SettingsConstants::MSG_IMPORT_SUCCESS));
+    AppHelpers::showInfo(this, AppHelpers::trMsg(SettingsConstants::MSG_IMPORT_SUCCESS), tr("Import Successful"));
+    // Every POSBox app still holds the old data: close them all.
+    ChangeNotifier notifier;
+    notifier.notifyChange(ChangeType::SESSION_LOGOUT_REQUESTED, 0);
     QApplication::quit();
 }
 
@@ -1649,48 +1670,30 @@ void SettingsWindow::loadNotificationSettings()
 {
     QSignalBlocker blocker1(ui->openTicketCheck);
     QSignalBlocker blocker2(ui->openTicketDays);
-    QSignalBlocker blocker3(ui->openTicketFrequancy);
-    QSignalBlocker blocker4(ui->outStockCheck);
-    QSignalBlocker blocker5(ui->nearOutStockCheck);
-    Q_UNUSED(blocker1)
-    Q_UNUSED(blocker2)
-    Q_UNUSED(blocker3)
-    Q_UNUSED(blocker4)
-    Q_UNUSED(blocker5)
+    QSignalBlocker blocker3(ui->outStockCheck);
+    QSignalBlocker blocker4(ui->nearOutStockCheck);
+    QSignalBlocker blocker5(ui->lowStockMinSpin);
 
-    QSqlQuery query(m_db->database());
-    query.exec("SELECT open_ticket_enabled, open_ticket_days, open_ticket_frequency, expense_due_enabled, expense_due_days, expense_overdue_enabled, expense_overdue_days, out_of_stock_enabled, nearly_out_of_stock_enabled FROM notification_settings WHERE id = 1");
-    if (!query.next())
+    QList<DataRow> rows = m_api->select("notification_settings", {{"id", 1}});
+    if (!m_api->ok() || rows.isEmpty())
         return;
+    DataRow row = rows.first();
 
-    ui->openTicketCheck->setChecked(query.value(0).toInt() != 0);
-    ui->openTicketDays->setCurrentIndex(ui->openTicketDays->findData(query.value(1).toInt()));
-    ui->openTicketFrequancy->setCurrentIndex(ui->openTicketFrequancy->findData(query.value(2).toInt()));
-
-    ui->outStockCheck->setChecked(query.value(7).toInt() != 0);
-    ui->nearOutStockCheck->setChecked(query.value(8).toInt() != 0);
+    ui->openTicketCheck->setChecked(row.value("open_ticket_enabled").toInt() != 0);
+    ui->openTicketDays->setCurrentIndex(ui->openTicketDays->findData(row.value("open_ticket_days").toInt()));
+    ui->outStockCheck->setChecked(row.value("out_of_stock_enabled").toInt() != 0);
+    ui->nearOutStockCheck->setChecked(row.value("nearly_out_of_stock_enabled").toInt() != 0);
+    ui->lowStockMinSpin->setValue(row.value("low_stock_min").toInt());
 }
 
 void SettingsWindow::saveNotificationSettings()
 {
-    QSqlQuery query(m_db->database());
-    query.prepare(R"(
-        UPDATE notification_settings SET
-            open_ticket_enabled = :ot_enabled,
-            open_ticket_days = :ot_days,
-            open_ticket_frequency = :ot_freq,
-            expense_due_enabled = :ed_enabled,
-            expense_due_days = :ed_days,
-            expense_overdue_enabled = :eo_enabled,
-            expense_overdue_days = :eo_days,
-            out_of_stock_enabled = :oos_enabled,
-            nearly_out_of_stock_enabled = :nos_enabled
-        WHERE id = 1
-    )");
-    query.bindValue(":ot_enabled", ui->openTicketCheck->isChecked() ? 1 : 0);
-    query.bindValue(":ot_days", ui->openTicketDays->currentData().toInt());
-    query.bindValue(":ot_freq", ui->openTicketFrequancy->currentData().toInt());
-    query.bindValue(":oos_enabled", ui->outStockCheck->isChecked() ? 1 : 0);
-    query.bindValue(":nos_enabled", ui->nearOutStockCheck->isChecked() ? 1 : 0);
-    query.exec();
+    QVariantMap values;
+    values["open_ticket_enabled"] = ui->openTicketCheck->isChecked() ? 1 : 0;
+    values["open_ticket_days"] = ui->openTicketDays->currentData().toInt();
+    values["out_of_stock_enabled"] = ui->outStockCheck->isChecked() ? 1 : 0;
+    values["nearly_out_of_stock_enabled"] = ui->nearOutStockCheck->isChecked() ? 1 : 0;
+    values["low_stock_min"] = ui->lowStockMinSpin->value();
+    if (!m_api->update("notification_settings", values, {{"id", 1}}))
+        qWarning() << "Failed to save notification settings:" << m_api->lastError();
 }

@@ -1,4 +1,5 @@
 #include "DiscountItemWidget.h"
+#include "ElidedLabel.h"
 #include "RegisterConstants.h"
 #include "Prefixes.h"
 #include <QHBoxLayout>
@@ -23,8 +24,10 @@ void DiscountItemWidget::setupUI(const QString& name, const QString& type,
     setObjectName("discount-item-widget");
     setProperty("class", "discount-item-widget");
 
+    setAttribute(Qt::WA_StyledBackground, true);
+
     QHBoxLayout* layout = new QHBoxLayout(this);
-    layout->setContentsMargins(10, 5, 10, 5);
+    layout->setContentsMargins(10, 5, 6, 5);
     layout->setSpacing(10);
 
     // Build display name with value info
@@ -36,7 +39,8 @@ void DiscountItemWidget::setupUI(const QString& name, const QString& type,
     }
 
     // Discount name label
-    m_nameLabel = new QLabel(displayName, this);
+    m_nameLabel = new ElidedLabel(displayName, this);
+    m_nameLabel->setToolTip(displayName);
     m_nameLabel->setObjectName("discount-name");
     m_nameLabel->setProperty("class", "discount-name");
     m_nameLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -61,7 +65,6 @@ void DiscountItemWidget::setupUI(const QString& name, const QString& type,
 
     // Add widgets to layout
     layout->addWidget(m_nameLabel, 1);
-    layout->addStretch();
     layout->addWidget(m_amountLabel, 0);
     layout->addWidget(m_removeBtn, 0);
 }

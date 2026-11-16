@@ -1,4 +1,6 @@
+#include <QCoreApplication>
 #include "UIMap.h"
+#include "Animations.h"
 #include "ui_RegisterWindow.h"
 #include "Prefixes.h"
 #include "RegisterConstants.h"
@@ -10,11 +12,12 @@
 #include <QVBoxLayout>
 #include <QScrollArea>
 #include <QIcon>
+#include "LineIcons.h"
 #include "StyleManager.h"
 
 // Static member initialization
 QLabel* UIMap::userLabel = nullptr;
-QPushButton* UIMap::ticketsBtn = nullptr;
+QLabel* UIMap::incomeLabel = nullptr;
 QPushButton* UIMap::notificationBtn = nullptr;
 QPushButton* UIMap::logoutBtn = nullptr;
 
@@ -41,7 +44,7 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
 
     // Map top bar elements
     userLabel       = ui->userLabel;
-    ticketsBtn      = ui->ticketsBtn;
+    incomeLabel     = ui->incomeLabel;
     notificationBtn = ui->notificationBtn;
     logoutBtn       = ui->logoutBtn;
 
@@ -61,20 +64,12 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
     confirmBtn    = ui->confirmBtn;
     cancelBtn     = ui->cancelBtn;
 
-    // Withdraw button styling
+    const LineIcons::Colors colors = LineIcons::colors();
+
     if (withdrawBtn) {
-        withdrawBtn->setStyleSheet(
-            "QPushButton { "
-            "    background-color: #E74C3C; "
-            "    color: white; "
-            "    border: none; "
-            "    border-radius: 6px; "
-            "    padding: 8px; "
-            "    font-weight: bold; "
-            "} "
-            "QPushButton:hover { "
-            "    background-color: #C0392B; "
-            "}");
+        withdrawBtn->setText(QCoreApplication::translate("RegisterWindow", "Withdraw"));
+        withdrawBtn->setIcon(LineIcons::icon("cash", colors.text, 18));
+        Animations::enableGlare(withdrawBtn);
     }
 
     // cartLayout — push items to the top, space between them
@@ -98,17 +93,19 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
     // ===== TOP BAR =====
 
     if (searchBar) {
-        searchBar->setPlaceholderText("");
+        searchBar->setPlaceholderText(QCoreApplication::translate("RegisterWindow", "Search products or scan barcode..."));
+    }
+
+    if (incomeLabel) {
+        incomeLabel->setObjectName("incomeLabel");
+        incomeLabel->setAlignment(Qt::AlignCenter);
+        incomeLabel->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
     }
 
     if (totalLabel) {
         totalLabel->setObjectName("totalLabel");
-        totalLabel->setText("");
+        totalLabel->setText(QString("%1 %2").arg(AppHelpers::formatAmount(0), AppConstants::CURRENCY));
         totalLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    }
-
-    if (ticketsBtn) {
-        ticketsBtn->setText("");
     }
 
     // Notification button — icon only, square
@@ -117,7 +114,7 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
         notificationBtn->setIcon(QIcon(StyleManager::iconPath("notification")));
         notificationBtn->setIconSize(QSize(22, 22));
         notificationBtn->setFixedSize(36, 36);
-        notificationBtn->setToolTip("");
+        notificationBtn->setToolTip(QCoreApplication::translate("RegisterWindow", "Notifications"));
     }
 
     // Logout button — icon only, square
@@ -126,44 +123,48 @@ void UIMap::initialize(Ui::RegisterWindow* ui)
         logoutBtn->setIcon(QIcon(StyleManager::iconPath("logout")));
         logoutBtn->setIconSize(QSize(22, 22));
         logoutBtn->setFixedSize(36, 36);
-        logoutBtn->setToolTip("");
+        logoutBtn->setToolTip(QCoreApplication::translate("RegisterWindow", "Logout"));
     }
 
     // ===== PRODUCTS SECTION =====
 
     if (customItemBtn) {
-        customItemBtn->setText("");
+        customItemBtn->setText(QCoreApplication::translate("RegisterWindow", "Custom Item"));
+        customItemBtn->setIcon(LineIcons::icon("plus", colors.text, 16));
+        Animations::enableGlare(customItemBtn);
     }
 
     // ===== CART SECTION =====
 
     if (openTicketsBtn) {
-        openTicketsBtn->setText("");
+        openTicketsBtn->setText(QCoreApplication::translate("RegisterWindow", "Open Tickets"));
+        openTicketsBtn->setIcon(LineIcons::icon("receipt", colors.text, 18));
+        Animations::enableGlare(openTicketsBtn);
     }
 
-    // Discount button — icon only, square
     if (discountBtn) {
-        discountBtn->setText("");
-        discountBtn->setIcon(QIcon(StyleManager::iconPath("discount")));
-        discountBtn->setIconSize(QSize(22, 22));
-        discountBtn->setFixedSize(36, 36);
-        discountBtn->setToolTip("");
+        discountBtn->setText(QCoreApplication::translate("RegisterWindow", "Discount"));
+        discountBtn->setIcon(LineIcons::icon("tag", Qt::white, 18));
+        discountBtn->setToolTip(QCoreApplication::translate("RegisterWindow", "Apply Discount"));
+        Animations::enableGlare(discountBtn);
     }
 
     // Confirm — green
     if (confirmBtn) {
-        confirmBtn->setText("");
+        confirmBtn->setText(QCoreApplication::translate("RegisterWindow", "Confirm"));
         confirmBtn->setProperty("btnStyle", "add");
         confirmBtn->style()->unpolish(confirmBtn);
         confirmBtn->style()->polish(confirmBtn);
+        Animations::enableGlare(confirmBtn);
     }
 
-    // Cancel — red
+    // Cancel — quieter than Confirm, so the two aren't mistaken at speed
     if (cancelBtn) {
-        cancelBtn->setText("");
-        cancelBtn->setProperty("btnStyle", "delete");
+        cancelBtn->setText(QCoreApplication::translate("RegisterWindow", "Cancel"));
+        cancelBtn->setProperty("btnStyle", "outlineDanger");
         cancelBtn->style()->unpolish(cancelBtn);
         cancelBtn->style()->polish(cancelBtn);
+        Animations::enableGlare(cancelBtn);
     }
 
     qDebug() << "UIMap initialized successfully";

@@ -1,7 +1,8 @@
 #include "UserDialog.h"
+#include "Prefixes.h"
+#include "ToggleSwitch.h"
 #include "SettingsConstants.h"
-#include "DatabaseManager.h"
-#include "QueryRepository.h"
+#include "LocalApi.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -10,16 +11,17 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QLabel>
+#include <QStyle>
 #include <QDialogButtonBox>
-#include <QSqlQuery>
-#include <QSqlError>
-#include <QMessageBox>
 #include <QDebug>
 
-UserDialog::UserDialog(DatabaseManager* db, Mode mode,
+UserDialog::UserDialog(LocalApi* api, Mode mode,
                        const QString& username, QWidget* parent)
-    : QDialog(parent)
-    , m_db(db)
+    : ModernDialog(Look::Card, "user", Tone::Accent, mode == Mode::Add ? tr("Add user") : tr("Edit user"),
+                   mode == Mode::Add ? tr("They sign in with this username and password")
+                                     : tr("Leave the password empty to keep the current one"),
+                   420, parent)
+    , m_api(api)
     , m_mode(mode)
     , m_username(username)
     , m_usernameField(nullptr)
@@ -28,6 +30,7 @@ UserDialog::UserDialog(DatabaseManager* db, Mode mode,
     , m_passwordField(nullptr)
     , m_confirmPasswordField(nullptr)
     , m_showPasswordCheck(nullptr)
+    , m_matchLabel(nullptr)
 {
     setupUI();
     if (m_mode == Mode::Edit) {
@@ -41,110 +44,66 @@ UserDialog::UserDialog(DatabaseManager* db, Mode mode,
 
 void UserDialog::setupUI()
 {
-    setWindowTitle(m_mode == Mode::Add ? tr("Add User") : tr("Edit User"));
-    setMinimumWidth(380);
-    setModal(true);
-
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setSpacing(16);
-    mainLayout->setContentsMargins(24, 24, 24, 24);
-
-    // Title label
-    QLabel* titleLabel = new QLabel(
-        m_mode == Mode::Add ? tr("Add New User") : tr("Edit User"), this);
-    titleLabel->setStyleSheet(
-        "font-size: 15px; font-weight: bold; color: #ffffff; margin-bottom: 4px;");
-    titleLabel->setAlignment(Qt::AlignCenter);
-    mainLayout->addWidget(titleLabel);
-
-    // Form layout
-    QFormLayout* form = new QFormLayout();
-    form->setSpacing(10);
-    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
-
-    auto makeLabel = [&](const QString& text) -> QLabel* {
-        QLabel* lbl = new QLabel(text, this);
-        lbl->setStyleSheet("font-size: 13px; font-weight: bold; color: #cccccc;");
-        return lbl;
-    };
-
-    // Username
     m_usernameField = new QLineEdit(this);
     m_usernameField->setPlaceholderText(tr("Username"));
-    m_usernameField->setAlignment(Qt::AlignCenter);
     if (m_mode == Mode::Edit) {
         m_usernameField->setText(m_username);
         m_usernameField->setReadOnly(true);
-        m_usernameField->setStyleSheet(
-            "QLineEdit {"
-            "  background-color: #2d2d2d;"
-            "  color: #888888;"
-            "  border: 2px solid #404040;"
-            "  border-radius: 8px;"
-            "  padding: 8px 12px;"
-            "  font-size: 13px;"
-            "}");
+        m_usernameField->setProperty("locked", true);
     }
-    form->addRow(makeLabel(tr("Username")), m_usernameField);
 
-    // Display name
     m_displayNameField = new QLineEdit(this);
     m_displayNameField->setPlaceholderText(tr("Display name"));
-    m_displayNameField->setAlignment(Qt::AlignCenter);
-    form->addRow(makeLabel(tr("Display Name")), m_displayNameField);
+    addFieldPair(tr("Username"), m_usernameField, tr("Display name"), m_displayNameField);
 
-    // Role
     m_roleCombo = new QComboBox(this);
-    m_roleCombo->addItems({tr("Admin"), tr("Manager"), tr("Cashier")});
-    form->addRow(makeLabel(tr("Role")), m_roleCombo);
+    // The stored role travels as item data; the shown name is translated.
+    for (const char* role : {"Admin", "Manager", "Cashier"})
+        m_roleCombo->addItem(AppHelpers::roleName(role), QString::fromLatin1(role));
+    addField(tr("Role"), m_roleCombo);
 
-    // Password
     m_passwordField = new QLineEdit(this);
     m_passwordField->setEchoMode(QLineEdit::Password);
-    m_passwordField->setAlignment(Qt::AlignCenter);
-    if (m_mode == Mode::Edit) {
-        m_passwordField->setPlaceholderText(tr("Leave empty to keep current password"));
-    } else {
-        m_passwordField->setPlaceholderText(tr("Password"));
-    }
-    form->addRow(makeLabel(tr("Password")), m_passwordField);
+    m_passwordField->setPlaceholderText(m_mode == Mode::Edit ? tr("Keep current") : tr("Password"));
 
-    // Confirm password
     m_confirmPasswordField = new QLineEdit(this);
     m_confirmPasswordField->setEchoMode(QLineEdit::Password);
-    m_confirmPasswordField->setAlignment(Qt::AlignCenter);
     m_confirmPasswordField->setPlaceholderText(tr("Confirm password"));
-    form->addRow(makeLabel(tr("Confirm")), m_confirmPasswordField);
+    addFieldPair(tr("Password"), m_passwordField, tr("Confirm password"), m_confirmPasswordField);
 
-    mainLayout->addLayout(form);
+    auto* showRow = new QHBoxLayout;
+    auto* showLabel = new QLabel(tr("Show password"), this);
+    showLabel->setObjectName("modalSwitchLabel");
+    m_showPasswordCheck = new ToggleSwitch(this);
+    showRow->addWidget(showLabel, 1);
+    showRow->addWidget(m_showPasswordCheck);
+    body()->addLayout(showRow);
 
-    // Show password checkbox
-    m_showPasswordCheck = new QCheckBox(tr("Show password"), this);
-    m_showPasswordCheck->setStyleSheet(
-        "QCheckBox { color: #aaaaaa; font-size: 12px; }");
-    mainLayout->addWidget(m_showPasswordCheck);
+    m_matchLabel = new QLabel(this);
+    m_matchLabel->setObjectName("modalMatch");
+    body()->addWidget(m_matchLabel);
+    updatePasswordMatch();
 
-    // Buttons
-    QHBoxLayout* btnLayout = new QHBoxLayout();
-    btnLayout->setSpacing(10);
+    QPushButton* saveBtn = addFooter(m_mode == Mode::Add ? tr("Add User") : tr("Save"),
+                                     m_mode == Mode::Add ? "plus" : "check", "add");
 
-    QPushButton* cancelBtn = new QPushButton(tr("Cancel"), this);
-    QPushButton* saveBtn   = new QPushButton(
-        m_mode == Mode::Add ? tr("Add") : tr("Save"), this);
-
-    saveBtn->setProperty("btnStyle", "add");
-    saveBtn->setMinimumHeight(36);
-    cancelBtn->setMinimumHeight(36);
-
-    btnLayout->addWidget(cancelBtn);
-    btnLayout->addWidget(saveBtn);
-    mainLayout->addLayout(btnLayout);
-
-    // Connections
     connect(m_showPasswordCheck, &QCheckBox::toggled,
             this, &UserDialog::onShowPasswordToggled);
-    connect(saveBtn,   &QPushButton::clicked, this, &UserDialog::onSaveClicked);
-    connect(cancelBtn, &QPushButton::clicked, this, &UserDialog::onCancelClicked);
+    connect(m_passwordField, &QLineEdit::textChanged, this, &UserDialog::updatePasswordMatch);
+    connect(m_confirmPasswordField, &QLineEdit::textChanged, this, &UserDialog::updatePasswordMatch);
+    connect(saveBtn, &QPushButton::clicked, this, &UserDialog::onSaveClicked);
+}
+
+void UserDialog::updatePasswordMatch()
+{
+    const QString password = m_passwordField->text();
+    const QString confirm = m_confirmPasswordField->text();
+    const bool answered = !password.isEmpty() && !confirm.isEmpty();
+    const bool match = password == confirm;
+    m_matchLabel->setText(answered ? (match ? tr("✓  Passwords match") : tr("Passwords don't match")) : QString());
+    m_matchLabel->setProperty("bad", answered && !match);
+    m_matchLabel->style()->unpolish(m_matchLabel);
+    m_matchLabel->style()->polish(m_matchLabel);
 }
 
 // ============================================================================
@@ -153,20 +112,18 @@ void UserDialog::setupUI()
 
 void UserDialog::loadUser()
 {
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::ACCOUNT_SELECT_BY_USERNAME);
-    query.addBindValue(m_username);
-
-    if (!query.exec() || !query.next()) {
+    QList<DataRow> rows = m_api->select("accounts", {{"username", m_username}});
+    if (!m_api->ok() || rows.isEmpty()) {
         qWarning() << "UserDialog: failed to load user:" << m_username
-                   << query.lastError().text();
+                   << m_api->lastError();
         return;
     }
+    DataRow row = rows.first();
 
-    m_displayNameField->setText(query.value("display_name").toString());
+    m_displayNameField->setText(row.value("display_name").toString());
 
-    QString role = query.value("role").toString();
-    int roleIndex = m_roleCombo->findText(role);
+    QString role = row.value("role").toString();
+    int roleIndex = m_roleCombo->findData(role);
     if (roleIndex >= 0) {
         m_roleCombo->setCurrentIndex(roleIndex);
     }
@@ -181,13 +138,13 @@ void UserDialog::loadUser()
 bool UserDialog::validate()
 {
     if (m_usernameField->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, tr("Validation Error"), tr("Username cannot be empty."));
+        AppHelpers::showWarning(this, tr("Username cannot be empty."));
         m_usernameField->setFocus();
         return false;
     }
 
     if (m_displayNameField->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, tr("Validation Error"), tr("Display name cannot be empty."));
+        AppHelpers::showWarning(this, tr("Display name cannot be empty."));
         m_displayNameField->setFocus();
         return false;
     }
@@ -197,13 +154,13 @@ bool UserDialog::validate()
 
     // In add mode password is required; in edit mode it's optional
     if (m_mode == Mode::Add && password.isEmpty()) {
-        QMessageBox::warning(this, tr("Validation Error"), tr("Password cannot be empty."));
+        AppHelpers::showWarning(this, tr("Password cannot be empty."));
         m_passwordField->setFocus();
         return false;
     }
 
     if (!password.isEmpty() && password != confirm) {
-        QMessageBox::warning(this, tr("Validation Error"), tr("Passwords do not match."));
+        AppHelpers::showWarning(this, tr("Passwords do not match."));
         m_confirmPasswordField->clear();
         m_confirmPasswordField->setFocus();
         return false;
@@ -220,52 +177,30 @@ bool UserDialog::saveUser()
 {
     QString username    = m_usernameField->text().trimmed();
     QString displayName = m_displayNameField->text().trimmed();
-    QString role        = m_roleCombo->currentText();
+    QString role        = m_roleCombo->currentData().toString();
     QString password    = m_passwordField->text();
 
     if (m_mode == Mode::Add) {
-        QSqlQuery query(m_db->database());
-        query.prepare(Queries::ACCOUNT_INSERT);
-        query.addBindValue(username);
-        query.addBindValue(password);
-        query.addBindValue(role);
-        query.addBindValue(displayName);
-        query.addBindValue(QVariant()); // email
-        query.addBindValue(QVariant()); // phone
-
-        if (!query.exec()) {
-            qWarning() << "UserDialog: insert failed:" << query.lastError().text();
-            QMessageBox::warning(this, tr("Error"), tr(SettingsConstants::MSG_USER_ADD_SUCCESS));
+        int id = m_api->insert("accounts", {
+            {"username", username}, {"password_hash", password},
+            {"role", role}, {"display_name", displayName}
+        });
+        if (id < 0 && !m_api->ok()) {
+            qWarning() << "UserDialog: insert failed:" << m_api->lastError();
+            AppHelpers::showWarning(this, tr("Could not create the user.\n\n") + m_api->lastError());
             return false;
         }
 
         qDebug() << "User added:" << username;
 
     } else {
-        // Build update query — password only updated if a new one was entered
-        QSqlQuery query(m_db->database());
-
-        if (password.isEmpty()) {
-            // Keep existing password — update everything else
-            query.prepare(
-                "UPDATE accounts SET role = ?, display_name = ?, is_active = 1 "
-                "WHERE username = ?");
-            query.addBindValue(role);
-            query.addBindValue(displayName);
-            query.addBindValue(m_username);
-        } else {
-            query.prepare(
-                "UPDATE accounts SET password_hash = ?, role = ?, display_name = ?, is_active = 1 "
-                "WHERE username = ?");
-            query.addBindValue(password);
-            query.addBindValue(role);
-            query.addBindValue(displayName);
-            query.addBindValue(m_username);
-        }
-
-        if (!query.exec()) {
-            qWarning() << "UserDialog: update failed:" << query.lastError().text();
-            QMessageBox::warning(this, tr("Error"), tr(SettingsConstants::MSG_USER_EDIT_SUCCESS));
+        // Password only updated when a new one was entered.
+        QVariantMap values{{"role", role}, {"display_name", displayName}};
+        if (!password.isEmpty())
+            values["password_hash"] = password;
+        if (!m_api->update("accounts", values, {{"username", m_username}})) {
+            qWarning() << "UserDialog: update failed:" << m_api->lastError();
+            AppHelpers::showWarning(this, tr("Could not update the user.\n\n") + m_api->lastError());
             return false;
         }
 
@@ -291,9 +226,4 @@ void UserDialog::onSaveClicked()
     if (!validate()) return;
     if (!saveUser()) return;
     accept();
-}
-
-void UserDialog::onCancelClicked()
-{
-    reject();
 }

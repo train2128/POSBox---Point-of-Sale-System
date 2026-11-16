@@ -1,55 +1,58 @@
 #include "FinancialWindow.h"
+#include "Animations.h"
+#include "FinancialWidgets.h"
+#include "LineIcons.h"
+#include "ModernDialog.h"
 #include "ui_financialwindow.h"
 #include "FinancialUIMap.h"
 #include "FinancialConstants.h"
-#include "DatabaseManager.h"
-#include "QueryRepository.h"
+#include "LocalApi.h"
 #include "SessionManager.h"
 #include "StyleManager.h"
 #include "UserSession.h"
 #include "CommonConfig.h"
 #include "Prefixes.h"
 #include "NotificationManager.h"
-#include "NotificationPanel.h"
-#include "AccessControl.h"
+#include "NotificationBell.h"
+#include "NotificationActions.h"
+#include "ChangeNotifier.h"
 #include "LogoutManager.h"
-#include <QLocale>
 #include "TranslationManager.h"
-#include <QSqlQuery>
-#include <QSqlError>
-#include <QTableWidgetItem>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QDoubleSpinBox>
-#include <QPushButton>
-#include <QInputDialog>
-#include <QMessageBox>
+#include <QBrush>
+#include <QComboBox>
 #include <QDate>
 #include <QDebug>
+#include <QFrame>
+#include <QGroupBox>
+#include <QHash>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QSignalBlocker>
+#include <QStyle>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 
 FinancialWindow::FinancialWindow(UserSession* session,
-                                 DatabaseManager* db,
+                                 LocalApi* api,
+                                 ChangeNotifier* notifier,
                                  QWidget* parent)
     : QMainWindow(parent)
     , ui(new Ui::FinancialWindow)
     , m_session(session)
-    , m_db(db)
-    , m_notificationManager(nullptr)
-    , m_notificationPanel(nullptr)
+    , m_api(api)
+    , m_notifier(notifier)
 {
     ui->setupUi(this);
 
-    StyleManager::applyGlobalStyles(this, m_db->database());
     FinancialUIMap::initialize(ui);
+    buildLayout();
 
-    // Setup notification system
-    m_notificationManager = new NotificationManager(db, this);
-    m_notificationManager->checkAndGenerate();
-    connect(m_notificationManager, &NotificationManager::notificationsChanged, this, &FinancialWindow::updateNotificationBadge);
-    updateNotificationBadge();
+    m_bell = new NotificationBell(m_api, FinancialUIMap::notificationBtn,
+                                  m_session ? m_session->username() : QString(),
+                                  m_notifier, this);
 
+    retranslateUi();
     setupConnections();
     updateUserDisplay();
 
@@ -60,7 +63,21 @@ FinancialWindow::FinancialWindow(UserSession* session,
     loadOneTimeExpenses();
     loadYearlyTable();
 
-    retranslateUi();
+    connect(FinancialUIMap::yearlyTable, &QTableWidget::currentCellChanged, this, [this](int row) {
+        m_yearChart->setSelectedMonth(row >= 0 && row < 12 ? row + 1 : 0);
+    });
+    connect(m_yearChart, &YearChart::monthClicked, this, [](int month) {
+        FinancialUIMap::yearlyTable->setCurrentCell(month - 1, 0);
+    });
+    FinancialUIMap::yearlyTable->setCurrentCell(QDate::currentDate().month() - 1, 0);
+
+    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
+            this, [this]() {
+                retranslateUi();
+                loadMonthlySummary();
+                loadWeeklyTable();
+                loadYearlyTable();
+            });
 
     showMaximized();
 }
@@ -70,37 +87,67 @@ FinancialWindow::~FinancialWindow()
     delete ui;
 }
 
-void FinancialWindow::onNotificationClicked()
+void FinancialWindow::retranslateUi()
 {
-    if (!m_notificationPanel) {
-        QString username = m_session ? m_session->username() : "";
-        m_notificationPanel = new NotificationPanel(m_notificationManager, username, m_db->database(), this);
-    }
+    setWindowTitle(tr("POSBox - Financial"));
+    ui->tabwidget->setTabText(0, tr("Overview"));
+    ui->tabwidget->setTabText(1, tr("Yearly Summary"));
+    FinancialUIMap::notificationBtn->setToolTip(tr("Notifications"));
+    FinancialUIMap::logoutBtn->setToolTip(tr("Logout"));
 
-    if (m_notificationPanel->isVisible()) {
-        m_notificationPanel->hide();
-    } else {
-        QPoint btnPos = FinancialUIMap::notificationBtn->mapToGlobal(QPoint(0, 0));
-        m_notificationPanel->move(btnPos.x() - m_notificationPanel->width() + FinancialUIMap::notificationBtn->width(), 
-                                btnPos.y() + FinancialUIMap::notificationBtn->height());
-        m_notificationPanel->show();
+    // Month names in the app language.
+    const QLocale locale = TranslationManager::instance().locale();
+    {
+        QSignalBlocker block(FinancialUIMap::monthSelect);
+        for (int i = 0; i < 12 && i < FinancialUIMap::monthSelect->count(); ++i)
+            FinancialUIMap::monthSelect->setItemText(i, locale.standaloneMonthName(i + 1, QLocale::LongFormat));
     }
+    for (int row = 0; row < 12; ++row) {
+        if (QTableWidgetItem* item = FinancialUIMap::yearlyTable->item(row, FinancialConstants::COL_YEAR_MONTH))
+            item->setText(locale.standaloneMonthName(row + 1, QLocale::LongFormat));
+    }
+    if (QTableWidgetItem* total = FinancialUIMap::yearlyTable->item(12, FinancialConstants::COL_YEAR_MONTH))
+        total->setText(tr("Total"));
+
+    const QString currency = QString::fromUtf8(AppConstants::CURRENCY);
+    m_kpiIncome.title->setText(tr("Income"));
+    m_kpiIncome.sub->setText(tr("Everything sold, in %1").arg(currency));
+    m_kpiCost.title->setText(tr("Cost"));
+    m_kpiCost.sub->setText(tr("What those items cost"));
+    m_kpiBenefit.title->setText(tr("Benefit"));
+    m_kpiBenefit.sub->setText(tr("Income − Cost"));
+    m_kpiExpenses.title->setText(tr("Expenses"));
+    m_kpiExpenses.sub->setText(tr("Expenses and withdrawals"));
+    m_kpiRest.title->setText(tr("Rest"));
+    m_kpiRest.sub->setText(tr("Benefit − Expenses"));
+
+    m_weekLegend->setText(QString("<span style='color:#27AE60'>■</span> %1 &nbsp; "
+                                  "<span style='color:#E74C3C'>■</span> %2")
+                              .arg(tr("Income"), tr("Expenses")));
+    m_topTitle->setText(tr("Top sellers this month"));
+    m_expenseTitle->setText(tr("One-time expenses"));
+    m_expenseTotalCaption->setText(tr("Total"));
+    FinancialUIMap::addExpenseBtn->setText(tr("Add"));
+    FinancialUIMap::deleteExpenseBtn->setText(tr("Delete"));
+    FinancialUIMap::expensesTable->horizontalHeaderItem(FinancialConstants::COL_EXP_NAME)->setText(tr("Name"));
+    FinancialUIMap::expensesTable->horizontalHeaderItem(FinancialConstants::COL_EXP_AMOUNT)->setText(tr("Amount"));
+
+    m_yearCaption->setText(tr("Yearly Summary"));
+    m_chartTitle->setText(tr("Income by month"));
+    m_yearChart->setToolTip(tr("Click a month to select it"));
+    QTableWidget* yearly = FinancialUIMap::yearlyTable;
+    yearly->horizontalHeaderItem(FinancialConstants::COL_YEAR_MONTH)->setText(tr("Month (amounts in %1)").arg(currency));
+    yearly->horizontalHeaderItem(FinancialConstants::COL_YEAR_INCOME)->setText(tr("Income"));
+    yearly->horizontalHeaderItem(FinancialConstants::COL_YEAR_COST)->setText(tr("Cost"));
+    yearly->horizontalHeaderItem(FinancialConstants::COL_YEAR_EXPENSES)->setText(tr("Expenses"));
+    yearly->horizontalHeaderItem(FinancialConstants::COL_YEAR_BENEFIT)->setText(tr("Benefit"));
 }
 
-void FinancialWindow::updateNotificationBadge()
+void FinancialWindow::handleNavigation(const QString& action)
 {
-    if (!FinancialUIMap::notificationBtn) return;
-
-    int count = m_notificationManager ? m_notificationManager->unreadCount() : 0;
-
-    if (count > 0) {
-        FinancialUIMap::notificationBtn->setIcon(QIcon(StyleManager::iconPath("notification")));
-        FinancialUIMap::notificationBtn->setStyleSheet(
-            "QPushButton { background-color: #4A90E2; border-radius: 18px; }");
-    } else {
-        FinancialUIMap::notificationBtn->setIcon(QIcon(StyleManager::iconPath("notification")));
-        FinancialUIMap::notificationBtn->setStyleSheet("");
-    }
+    Q_UNUSED(action)
+    // "Financial|show" (and anything else) is a focus request.
+    AppHelpers::bringToFront(this);
 }
 
 // ============================================================================
@@ -110,8 +157,7 @@ void FinancialWindow::updateNotificationBadge()
 void FinancialWindow::setupConnections()
 {
     // Top bar
-    connect(FinancialUIMap::notificationBtn, &QPushButton::clicked,
-            this, &FinancialWindow::onNotificationClicked);
+    connect(FinancialUIMap::notificationBtn, &QPushButton::clicked, m_bell, &NotificationBell::togglePanel);
     connect(FinancialUIMap::logoutBtn, &QPushButton::clicked,
             this, &FinancialWindow::onLogoutClicked);
 
@@ -126,12 +172,26 @@ void FinancialWindow::setupConnections()
             this, &FinancialWindow::onDeleteExpenseClicked);
 
     // Tab 2
+    connect(FinancialUIMap::yearlySelect, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &FinancialWindow::onYearlySelectChanged);
     connect(FinancialUIMap::yearlyTable, &QTableWidget::cellDoubleClicked,
             this, &FinancialWindow::onYearlyTableDoubleClicked);
 
-    // Language change — retranslate all UI text
-    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
-            this, &FinancialWindow::retranslateUi);
+    if (m_notifier) {
+        connect(m_notifier, &ChangeNotifier::appNavigateRequested,
+                this, &FinancialWindow::handleNavigation);
+        // A sale, refund or withdrawal in another app changes the numbers here.
+        auto refresh = [this](int) {
+            loadMonthlySummary();
+            loadWeeklyTable();
+            loadTopSalesTable();
+            loadOneTimeExpenses();
+            loadYearlyTable();
+        };
+        connect(m_notifier, &ChangeNotifier::ticketCreated, this, refresh);
+        connect(m_notifier, &ChangeNotifier::ticketUpdated, this, refresh);
+        connect(m_notifier, &ChangeNotifier::expenseUpdated, this, refresh);
+    }
 }
 
 void FinancialWindow::updateUserDisplay()
@@ -140,78 +200,7 @@ void FinancialWindow::updateUserDisplay()
         FinancialUIMap::userLabel->setText(
             QString("%1  |  %2")
                 .arg(m_session->displayName())
-                .arg(m_session->role()));
-}
-
-void FinancialWindow::retranslateUi()
-{
-    // Window title
-    setWindowTitle(tr("POSBox - Financial"));
-
-    // Top bar
-    if (FinancialUIMap::notificationBtn)
-        FinancialUIMap::notificationBtn->setToolTip(tr("Notifications"));
-    if (FinancialUIMap::logoutBtn)
-        FinancialUIMap::logoutBtn->setToolTip(tr("Logout"));
-
-    // Tab titles
-    ui->tabwidget->setTabText(0, tr("Overview"));
-    ui->tabwidget->setTabText(1, tr("Tax & Yearly"));
-    ui->tabwidget->setTabText(2, tr("Documents"));
-    ui->tabwidget->setTabText(3, tr("Settings"));
-
-    // Group box titles
-    FinancialUIMap::expensesBox->setTitle(tr("One-Time Expenses"));
-
-    // Button labels
-    FinancialUIMap::addExpenseBtn->setText(tr("Add Expense"));
-    FinancialUIMap::deleteExpenseBtn->setText(tr("Delete"));
-
-    // Month names in monthSelect (locale-aware)
-    for (int i = 0; i < 12; ++i)
-        FinancialUIMap::monthSelect->setItemText(i, QLocale::system().monthName(i + 1, QLocale::LongFormat));
-
-    // Monthly table horizontal header labels
-    FinancialUIMap::monthlyTable->setHorizontalHeaderLabels({
-        tr("Income"), tr("Cost"), tr("Benefit"), tr("Expenses"), tr("Rest")
-    });
-
-    // Weekly table horizontal header labels
-    FinancialUIMap::weeklyTable->setHorizontalHeaderLabels({
-        tr("Day"), tr("Income"), tr("Expenses")
-    });
-
-    // Weekly table day names (locale-aware via QDate)
-    const int dayMapping[] = {7, 1, 2, 3, 4, 5, 6};
-    for (int row = 0; row < 7; ++row) {
-        QTableWidgetItem* dayItem = FinancialUIMap::weeklyTable->item(row, FinancialConstants::COL_WEEKLY_DAY);
-        if (dayItem) dayItem->setText(QLocale::system().dayName(dayMapping[row], QLocale::LongFormat));
-    }
-
-    // Top sales table horizontal header labels
-    FinancialUIMap::topSalesTable->setHorizontalHeaderLabels({
-        tr("Rank"), tr("Product"), tr("Quantity")
-    });
-
-    // Expenses table horizontal header labels
-    FinancialUIMap::expensesTable->setHorizontalHeaderLabels({
-        tr("Name"), tr("Amount"), tr("Date")
-    });
-
-    // Yearly table horizontal header labels
-    FinancialUIMap::yearlyTable->setHorizontalHeaderLabels({
-        tr("Month"), tr("Income"), tr("Cost"), tr("Expenses"), tr("Benefit")
-    });
-
-    // Yearly table month names (locale-aware via QDate)
-    for (int row = 0; row < 12; ++row) {
-        QTableWidgetItem* monthItem = FinancialUIMap::yearlyTable->item(row, FinancialConstants::COL_YEAR_MONTH);
-        if (monthItem) monthItem->setText(QLocale::system().monthName(row + 1, QLocale::LongFormat));
-    }
-
-    // Yearly table total row label
-    QTableWidgetItem* totalItem = FinancialUIMap::yearlyTable->item(12, 0);
-    if (totalItem) totalItem->setText(tr("Total"));
+                .arg(AppHelpers::roleName(m_session->role())));
 }
 
 // ============================================================================
@@ -228,7 +217,7 @@ void FinancialWindow::onMonthYearChanged()
 
 void FinancialWindow::loadMonthlySummary()
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
     const int month = FinancialUIMap::monthSelect->currentData().toInt();
     const int year  = FinancialUIMap::yearSelect->currentData().toInt();
@@ -236,198 +225,104 @@ void FinancialWindow::loadMonthlySummary()
     const QString yyyy = QString::number(year);
 
     // ── Income: sum of completed ticket totals ────────────────────────────────
-    QSqlQuery incQ(m_db->database());
-    incQ.prepare(
-        "SELECT COALESCE(SUM(total), 0) FROM tickets "
-        "WHERE status = 'COMPLETED' "
-        "AND strftime('%Y', date) = ? AND strftime('%m', date) = ?");
-    incQ.addBindValue(yyyy);
-    incQ.addBindValue(mm);
-    double income = 0.0;
-    if (incQ.exec() && incQ.next()) income = incQ.value(0).toDouble();
+    const double income = m_api->incomeByMonth(yyyy, mm);
 
     // ── Cost: sum of unit_cost * quantity for completed tickets ───────────────
-    QSqlQuery costQ(m_db->database());
-    costQ.prepare(
-        "SELECT COALESCE(SUM(ti.unit_cost * ti.quantity), 0) "
-        "FROM ticket_items ti "
-        "JOIN tickets t ON ti.ticket_id = t.id "
-        "WHERE t.status = 'COMPLETED' "
-        "AND strftime('%Y', t.date) = ? AND strftime('%m', t.date) = ?");
-    costQ.addBindValue(yyyy);
-    costQ.addBindValue(mm);
-    double cost = 0.0;
-    if (costQ.exec() && costQ.next()) cost = costQ.value(0).toDouble();
+    const double cost = m_api->ticketCostByMonth(yyyy, mm);
 
-    // ── Expenses: one-time + recurring payments this month ────────────────────
-    QSqlQuery otQ(m_db->database());
-    otQ.prepare(Queries::ONE_TIME_EXPENSE_SELECT_BY_MONTH);
-    otQ.addBindValue(yyyy);
-    otQ.addBindValue(mm);
-    double otExpenses = 0.0;
-    if (otQ.exec())
-        while (otQ.next()) otExpenses += otQ.value("amount").toDouble();
+    // ── Expenses: one-time expenses and register withdrawals ──────────────────
+    double expenses = 0.0;
+    for (const DataRow& r : m_api->expensesByMonth(yyyy, mm))
+        expenses += r.value("amount").toDouble();
 
-    QSqlQuery recQ(m_db->database());
-    recQ.prepare(Queries::REC_EXPENSE_PAYMENT_SELECT_BY_MONTH);
-    recQ.addBindValue(yyyy);
-    recQ.addBindValue(mm);
-    double recExpenses = 0.0;
-    if (recQ.exec())
-        while (recQ.next()) recExpenses += recQ.value("amount").toDouble();
-
-    const double expenses = otExpenses + recExpenses;
     const double benefit  = income - cost;
     const double rest     = benefit - expenses;
 
-    // ── Update table ──────────────────────────────────────────────────────────
-    auto setCell = [&](int col, double val) {
-        QTableWidgetItem* item = FinancialUIMap::monthlyTable->item(0, col);
-        if (!item) {
-            item = new QTableWidgetItem();
-            item->setTextAlignment(Qt::AlignCenter);
-            FinancialUIMap::monthlyTable->setItem(0, col, item);
-        }
-        item->setText(AppHelpers::formatPrice(val));
-    };
+    setKpiValue(m_kpiIncome, income);
+    setKpiValue(m_kpiCost, cost);
+    setKpiValue(m_kpiBenefit, benefit);
+    setKpiValue(m_kpiExpenses, expenses);
+    setKpiValue(m_kpiRest, rest);
 
-    setCell(FinancialConstants::COL_MONTHLY_INCOME,   income);
-    setCell(FinancialConstants::COL_MONTHLY_COST,     cost);
-    setCell(FinancialConstants::COL_MONTHLY_BENEFIT,  benefit);
-    setCell(FinancialConstants::COL_MONTHLY_EXPENSES, expenses);
-    setCell(FinancialConstants::COL_MONTHLY_REST,     rest);
+    // Rest is the number that matters most: red when the month is short.
+    const char* restTone = rest < 0 ? "bad" : "good";
+    for (QWidget* widget : QList<QWidget*>{m_kpiRest.card, m_kpiRest.bar, m_kpiRest.value}) {
+        widget->setProperty("tone", restTone);
+        widget->style()->unpolish(widget);
+        widget->style()->polish(widget);
+    }
+    m_kpiRest.card->setProperty("hero", true);
+    m_kpiRest.card->style()->unpolish(m_kpiRest.card);
+    m_kpiRest.card->style()->polish(m_kpiRest.card);
+
+    m_periodTitle->setText(QString("%1 %2").arg(FinancialUIMap::monthSelect->currentText(), yyyy));
+}
+
+void FinancialWindow::setKpiValue(Kpi& kpi, double value)
+{
+    QLabel* label = kpi.value;
+    Animations::animateValues(label, {value}, [label](const QVector<double>& shown) {
+        label->setText(AppHelpers::formatAmount(shown[0]));
+    });
 }
 
 void FinancialWindow::loadWeeklyTable()
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
     const QDate today    = QDate::currentDate();
     // Qt: Monday=1, Sunday=7. Week starts Sunday.
     const QDate sunday = today.addDays(-(today.dayOfWeek() % 7));
     const QDate saturday = sunday.addDays(6);
 
-    double totalIncome   = 0.0;
-    double totalExpenses = 0.0;
-
-    for (int d = 0; d < 7; ++d) {
-        const QDate day = sunday.addDays(d);
-        const QString dateStr = day.toString("yyyy-MM-dd");
-
-        // Income for this day
-        QSqlQuery incQ(m_db->database());
-        incQ.prepare(
-            "SELECT COALESCE(SUM(total), 0) FROM tickets "
-            "WHERE status = 'COMPLETED' AND date = ?");
-        incQ.addBindValue(dateStr);
-        double dayIncome = 0.0;
-        if (incQ.exec() && incQ.next()) dayIncome = incQ.value(0).toDouble();
-
-        // One-time expenses for this day
-        QSqlQuery otQ(m_db->database());
-        otQ.prepare("SELECT COALESCE(SUM(amount), 0) FROM one_time_expenses WHERE date = ?");
-        otQ.addBindValue(dateStr);
-        double dayExpenses = 0.0;
-        if (otQ.exec() && otQ.next()) dayExpenses = otQ.value(0).toDouble();
-
-        // Recurring expense payments for this day
-        QSqlQuery recQ(m_db->database());
-        recQ.prepare(
-            "SELECT COALESCE(SUM(amount), 0) FROM recurring_expense_payments WHERE paid_date = ?");
-        recQ.addBindValue(dateStr);
-        if (recQ.exec() && recQ.next()) dayExpenses += recQ.value(0).toDouble();
-
-        totalIncome   += dayIncome;
-        totalExpenses += dayExpenses;
-
-        const int row = d;
-        auto setVal = [&](int col, const QString& text) {
-            QTableWidgetItem* item = FinancialUIMap::weeklyTable->item(row, col);
-            if (!item) {
-                item = new QTableWidgetItem();
-                item->setTextAlignment(Qt::AlignCenter);
-                FinancialUIMap::weeklyTable->setItem(row, col, item);
-            }
-            item->setText(text);
-        };
-
-        setVal(FinancialConstants::COL_WEEKLY_INCOME,   AppHelpers::formatPrice(dayIncome));
-        setVal(FinancialConstants::COL_WEEKLY_EXPENSES, AppHelpers::formatPrice(dayExpenses));
+    // Expenses per day of the week, from the one or two calendar months it spans.
+    QHash<QString, double> expensesByDay;
+    QList<QDate> months{sunday};
+    if (saturday.month() != sunday.month())
+        months << saturday;
+    for (const QDate& month : months) {
+        for (const DataRow& r : m_api->expensesByMonth(month.toString("yyyy"), month.toString("MM")))
+            expensesByDay[r.value("date").toString()] += r.value("amount").toDouble();
     }
 
-    // Total row (row 7)
-    auto setTotal = [&](int col, const QString& text) {
-        QTableWidgetItem* item = FinancialUIMap::weeklyTable->item(7, col);
-        if (!item) {
-            item = new QTableWidgetItem();
-            item->setTextAlignment(Qt::AlignCenter);
-            FinancialUIMap::weeklyTable->setItem(7, col, item);
-        }
-        item->setText(text);
-    };
-    setTotal(FinancialConstants::COL_WEEKLY_INCOME,   AppHelpers::formatPrice(totalIncome));
-    setTotal(FinancialConstants::COL_WEEKLY_EXPENSES, AppHelpers::formatPrice(totalExpenses));
+    QVector<double> incomeByDay(7);
+    QVector<double> expenseByDay(7);
+    for (int d = 0; d < 7; ++d) {
+        const QString dateStr = sunday.addDays(d).toString("yyyy-MM-dd");
+        incomeByDay[d] = m_api->dailyIncome(dateStr);
+        expenseByDay[d] = expensesByDay.value(dateStr);
+    }
+    m_weekChart->setDays(incomeByDay, expenseByDay, sunday.daysTo(today));
+
+    // Always the current week, whichever month is selected above: say so.
+    const QLocale locale = TranslationManager::instance().locale();
+    m_weekTitle->setText(tr("This week  ·  %1").arg(
+        sunday.month() == saturday.month()
+            ? QString("%1–%2").arg(sunday.day()).arg(locale.toString(saturday, "d MMM"))
+            : QString("%1 – %2").arg(locale.toString(sunday, "d MMM"), locale.toString(saturday, "d MMM"))));
 }
 
 void FinancialWindow::loadTopSalesTable()
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
     const int month = FinancialUIMap::monthSelect->currentData().toInt();
     const int year  = FinancialUIMap::yearSelect->currentData().toInt();
     const QString mm   = QString("%1").arg(month, 2, 10, QChar('0'));
     const QString yyyy = QString::number(year);
 
-    QSqlQuery q(m_db->database());
-    q.prepare(
-        "SELECT ti.product_name, SUM(ti.quantity) as total_qty "
-        "FROM ticket_items ti "
-        "JOIN tickets t ON ti.ticket_id = t.id "
-        "WHERE t.status = 'COMPLETED' "
-        "AND strftime('%Y', t.date) = ? AND strftime('%m', t.date) = ? "
-        "GROUP BY ti.product_name "
-        "ORDER BY total_qty DESC "
-        "LIMIT 3");
-    q.addBindValue(yyyy);
-    q.addBindValue(mm);
-
-    if (!q.exec()) {
-        qWarning() << "Failed to load top sales:" << q.lastError().text();
-        return;
-    }
-
     QList<QPair<QString, double>> topItems;
-    while (q.next()) {
-        topItems.append(qMakePair(
-            q.value("product_name").toString(),
-            q.value("total_qty").toDouble()
-        ));
+    for (const DataRow& r : m_api->topProductsByMonth(yyyy, mm)) {
+        topItems.append(qMakePair(r.value("product_name").toString(),
+                                  r.value("total_qty").toDouble()));
     }
 
-    for (int row = 0; row < 3; ++row) {
-        auto setVal = [&](int col, const QString& text) {
-            QTableWidgetItem* item = FinancialUIMap::topSalesTable->item(row, col);
-            if (!item) {
-                item = new QTableWidgetItem();
-                item->setTextAlignment(Qt::AlignCenter);
-                FinancialUIMap::topSalesTable->setItem(row, col, item);
-            }
-            item->setText(text);
-        };
-
-        if (row < topItems.size()) {
-            setVal(FinancialConstants::COL_TOPSALES_PRODUCT, topItems[row].first);
-            setVal(FinancialConstants::COL_TOPSALES_QTY,     QString::number(topItems[row].second, 'f', 0));
-        } else {
-            setVal(FinancialConstants::COL_TOPSALES_PRODUCT, "—");
-            setVal(FinancialConstants::COL_TOPSALES_QTY,     "—");
-        }
-    }
+    m_topSellers->setItems(topItems);
 }
 
 void FinancialWindow::loadOneTimeExpenses()
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
     const int month = FinancialUIMap::monthSelect->currentData().toInt();
     const int year  = FinancialUIMap::yearSelect->currentData().toInt();
@@ -436,117 +331,102 @@ void FinancialWindow::loadOneTimeExpenses()
 
     FinancialUIMap::expensesTable->setRowCount(0);
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::ONE_TIME_EXPENSE_SELECT_BY_MONTH);
-    query.addBindValue(yyyy);
-    query.addBindValue(mm);
-
-    if (!query.exec()) {
-        qWarning() << "loadOneTimeExpenses:" << query.lastError().text();
-        return;
-    }
-
-    while (query.next()) {
-        const int     id     = query.value("id").toInt();
-        const QString name   = query.value("name").toString();
-        const double  amount = query.value("amount").toDouble();
-        const QString date   = query.value("date").toString();
+    double total = 0.0;
+    const QList<DataRow> rows = m_api->expensesByMonth(yyyy, mm);
+    for (const DataRow& r : rows) {
+        const int     id     = r.value("id").toInt();
+        const QString name   = r.value("name").toString();
+        const double  amount = r.value("amount").toDouble();
+        const QString date   = r.value("date").toString();
+        total += amount;
 
         const int row = FinancialUIMap::expensesTable->rowCount();
         FinancialUIMap::expensesTable->insertRow(row);
 
-        auto makeItem = [&](const QString& text) {
-            QTableWidgetItem* item = new QTableWidgetItem(text);
-            item->setTextAlignment(Qt::AlignCenter);
-            item->setData(Qt::UserRole, id);
-            return item;
-        };
+        auto* nameItem = new QTableWidgetItem(name);
+        nameItem->setData(Qt::UserRole, id);
+        nameItem->setData(TwoLineDelegate::SecondLineRole,
+                          AppHelpers::formatDate(QDate::fromString(date, "yyyy-MM-dd")));
+        nameItem->setToolTip(name);
+        FinancialUIMap::expensesTable->setItem(row, FinancialConstants::COL_EXP_NAME, nameItem);
 
-        FinancialUIMap::expensesTable->setItem(row, FinancialConstants::COL_EXP_NAME,
-                                               makeItem(name));
-        FinancialUIMap::expensesTable->setItem(row, FinancialConstants::COL_EXP_AMOUNT,
-                                               makeItem(AppHelpers::formatPrice(amount)));
-        FinancialUIMap::expensesTable->setItem(row, FinancialConstants::COL_EXP_DATE,
-                                               makeItem(AppHelpers::formatDate(QDate::fromString(date, "yyyy-MM-dd"))));
+        auto* amountItem = new QTableWidgetItem(AppHelpers::formatAmount(amount));
+        amountItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        amountItem->setData(Qt::UserRole, id);
+        FinancialUIMap::expensesTable->setItem(row, FinancialConstants::COL_EXP_AMOUNT, amountItem);
     }
+    m_expenseTotal->setText(AppHelpers::formatAmount(total));
 }
 
 void FinancialWindow::onAddExpenseClicked()
 {
-    // Single dialog for name + amount
-    QDialog dlg(this);
-    dlg.setWindowTitle(tr("Add Expense"));
-    dlg.setFixedWidth(320);
+    // Name and amount; the date is always today.
+    ModernDialog dlg(ModernDialog::Look::Band, "receipt", ModernDialog::Tone::Red, tr("Add expense"),
+                     tr("Dated today  ·  %1").arg(AppHelpers::formatDate(QDate::currentDate())),
+                     420, this);
+    auto* nameEdit = new QLineEdit(&dlg);
+    nameEdit->setPlaceholderText(tr("What was it for?"));
+    dlg.addRow(tr("Name"), nameEdit);
+    QLineEdit* amountEdit = ModernDialog::moneyEdit(&dlg, true);
+    amountEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    dlg.addRow(tr("Amount"), amountEdit);
 
-    QVBoxLayout* layout = new QVBoxLayout(&dlg);
-    layout->setSpacing(10);
-    layout->setContentsMargins(16, 16, 16, 16);
-
-    QLineEdit* nameEdit = new QLineEdit(&dlg);
-    nameEdit->setPlaceholderText(tr("Expense name"));
-
-    QDoubleSpinBox* amountSpin = new QDoubleSpinBox(&dlg);
-    amountSpin->setMinimum(0.001);
-    amountSpin->setMaximum(999999.0);
-    amountSpin->setDecimals(AppConstants::PRICE_DECIMALS);
-    amountSpin->setSuffix(QString(" %1").arg(AppConstants::CURRENCY));
-
-    QDialogButtonBox* btns = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-
-    layout->addWidget(new QLabel(tr("Name:"), &dlg));
-    layout->addWidget(nameEdit);
-    layout->addWidget(new QLabel(tr("Amount:"), &dlg));
-    layout->addWidget(amountSpin);
-    layout->addWidget(btns);
+    QPushButton* addBtn = dlg.addFooter(tr("Add Expense"), "plus", "add");
+    connect(addBtn, &QPushButton::clicked, &dlg, [&]() {
+        if (nameEdit->text().trimmed().isEmpty()) {
+            AppHelpers::showWarning(&dlg, tr("Please enter an expense name."));
+            nameEdit->setFocus();
+        } else if (ModernDialog::moneyValue(amountEdit) <= 0) {
+            AppHelpers::showWarning(&dlg, tr("Please enter an amount."));
+            amountEdit->setFocus();
+        } else {
+            dlg.accept();
+        }
+    });
+    nameEdit->setFocus();
 
     if (dlg.exec() != QDialog::Accepted) return;
     const QString name   = nameEdit->text().trimmed();
-    const double  amount = amountSpin->value();
-    if (name.isEmpty()) {
-        AppHelpers::showWarning(this, tr("Please enter an expense name."));
+    const double  amount = ModernDialog::moneyValue(amountEdit);
+
+    if (m_api->insert("one_time_expenses",
+                      {{"name", name},
+                       {"amount", amount},
+                       {"date", QDate::currentDate().toString("yyyy-MM-dd")},
+                       {"notes", QVariant()}}) < 0) {
+        AppHelpers::showError(this, tr("Failed to add expense.") + "\n\n" + m_api->lastError());
         return;
     }
-
-    QSqlQuery ins(m_db->database());
-    ins.prepare(Queries::ONE_TIME_EXPENSE_INSERT);
-    ins.addBindValue(name.trimmed());
-    ins.addBindValue(amount);
-    ins.addBindValue(QDate::currentDate().toString("yyyy-MM-dd"));
-    ins.addBindValue(QVariant()); // notes
-
-    if (!ins.exec()) {
-        AppHelpers::showError(this, tr("Failed to add expense.\n\n") + ins.lastError().text());
-        return;
-    }
+    if (m_notifier)
+        m_notifier->notifyChange(ChangeType::EXPENSE_UPDATED, 0);
 
     loadOneTimeExpenses();
     loadMonthlySummary();
+    loadWeeklyTable();
+    loadYearlyTable();
 }
 
 void FinancialWindow::onDeleteExpenseClicked()
 {
     const int id = selectedOneTimeExpenseId();
     if (id <= 0) {
-        AppHelpers::showWarning(this, tr(FinancialConstants::MSG_NO_SELECTION));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(FinancialConstants::MSG_NO_SELECTION));
         return;
     }
 
-    if (!AppHelpers::confirmAction(this, tr(FinancialConstants::MSG_DELETE_CONFIRM))) return;
+    if (!AppHelpers::confirmAction(this, AppHelpers::trMsg(FinancialConstants::MSG_DELETE_CONFIRM))) return;
 
-    QSqlQuery del(m_db->database());
-    del.prepare(Queries::ONE_TIME_EXPENSE_DELETE);
-    del.addBindValue(id);
-
-    if (!del.exec()) {
-        AppHelpers::showError(this, tr("Failed to delete expense.\n\n") + del.lastError().text());
+    if (!m_api->remove("one_time_expenses", {{"id", id}})) {
+        AppHelpers::showError(this, tr("Failed to delete expense.") + "\n\n" + m_api->lastError());
         return;
     }
+    if (m_notifier)
+        m_notifier->notifyChange(ChangeType::EXPENSE_UPDATED, id);
 
     loadOneTimeExpenses();
     loadMonthlySummary();
+    loadWeeklyTable();
+    loadYearlyTable();
 }
 
 int FinancialWindow::selectedOneTimeExpenseId() const
@@ -561,55 +441,25 @@ int FinancialWindow::selectedOneTimeExpenseId() const
 // TAB 2 — YEARLY SUMMARY
 // ============================================================================
 
-void FinancialWindow::onYearlyTableDoubleClicked(int row, int column)
-{
-    Q_UNUSED(column)
-    if (row < 0 || row >= 12) return;
-
-    const int year  = QDate::currentDate().year();
-    const int month = row + 1;
-
-    const QString mm   = QString("%1").arg(month, 2, 10, QChar('0'));
-    const QString yyyy = QString::number(year);
-
-    QSqlQuery incQ(m_db->database());
-    incQ.prepare(
-        "SELECT COALESCE(SUM(total), 0), COUNT(*) FROM tickets "
-        "WHERE status = 'COMPLETED' "
-        "AND strftime('%Y', date) = ? AND strftime('%m', date) = ?");
-    incQ.addBindValue(yyyy);
-    incQ.addBindValue(mm);
-
-    double income = 0.0;
-    int    count  = 0;
-    if (incQ.exec() && incQ.next()) {
-        income = incQ.value(0).toDouble();
-        count  = incQ.value(1).toInt();
-    }
-
-    const QStringList monthNames = {
-        tr("January"), tr("February"), tr("March"), tr("April"), tr("May"), tr("June"),
-        tr("July"), tr("August"), tr("September"), tr("October"), tr("November"), tr("December")
-    };
-
-    AppHelpers::showInfo(this,
-                         QString("%1 %2\n\n%3: %4\n%5: %6")
-                             .arg(monthNames[month - 1])
-                             .arg(year)
-                             .arg(tr("Transactions"))
-                             .arg(count)
-                             .arg(tr("Total Income"))
-                             .arg(AppHelpers::formatPrice(income)));
-}
-
 void FinancialWindow::loadYearlyTable()
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
-    const int currentYear = QDate::currentDate().year();
-    const QString yyyy = QString::number(currentYear);
+    const int year  = FinancialUIMap::yearlySelect->currentData().toInt();
+    const QString yyyy = QString::number(year);
 
-    double totalIncome    = 0.0;
+    // Monthly income for the whole year in one query.
+    QHash<QString, double> incomeByMonth;
+    for (const DataRow& r : m_api->incomeByYear(yyyy))
+        incomeByMonth.insert(r.value("month").toString(), r.value("total").toDouble());
+
+    // Months still to come are shown quieter and left out of the totals. A past
+    // year counts all 12 months; a future year has nothing to count yet.
+    const QDate today = QDate::currentDate();
+    const int lastMonth = year < today.year() ? 12 : year > today.year() ? 0 : today.month();
+    QVector<double> monthlyIncome(12);
+
+    double totalIncome   = 0.0;
     double totalCost     = 0.0;
     double totalExpenses = 0.0;
     double totalBenefit  = 0.0;
@@ -617,111 +467,85 @@ void FinancialWindow::loadYearlyTable()
     for (int m = 1; m <= 12; ++m) {
         const QString mm = QString("%1").arg(m, 2, 10, QChar('0'));
 
-        // Total Income (from completed tickets)
-        QSqlQuery incQ(m_db->database());
-        incQ.prepare(
-            "SELECT COALESCE(SUM(total), 0) FROM tickets "
-            "WHERE status = 'COMPLETED' "
-            "AND strftime('%Y', date) = ? AND strftime('%m', date) = ?");
-        incQ.addBindValue(yyyy);
-        incQ.addBindValue(mm);
-        double income = 0.0;
-        if (incQ.exec() && incQ.next()) income = incQ.value(0).toDouble();
-
-        // Total Cost (unit_cost * quantity from ticket_items for completed tickets)
-        QSqlQuery costQ(m_db->database());
-        costQ.prepare(
-            "SELECT COALESCE(SUM(ti.unit_cost * ti.quantity), 0) "
-            "FROM ticket_items ti "
-            "JOIN tickets t ON ti.ticket_id = t.id "
-            "WHERE t.status = 'COMPLETED' "
-            "AND strftime('%Y', t.date) = ? AND strftime('%m', t.date) = ?");
-        costQ.addBindValue(yyyy);
-        costQ.addBindValue(mm);
-        double cost = 0.0;
-        if (costQ.exec() && costQ.next()) cost = costQ.value(0).toDouble();
-
-        // Total Expenses (one-time expenses for this month)
-        QSqlQuery expQ(m_db->database());
-        expQ.prepare(
-            "SELECT COALESCE(SUM(amount), 0) FROM one_time_expenses "
-            "WHERE strftime('%Y', expense_date) = ? AND strftime('%m', expense_date) = ?");
-        expQ.addBindValue(yyyy);
-        expQ.addBindValue(mm);
+        const double income = incomeByMonth.value(mm, 0.0);
+        monthlyIncome[m - 1] = income;
+        const bool counted = m <= lastMonth;
+        const double cost = counted ? m_api->ticketCostByMonth(yyyy, mm) : 0.0;
         double expenses = 0.0;
-        if (expQ.exec() && expQ.next()) expenses = expQ.value(0).toDouble();
-
-        // Total Benefit = Income - Cost - Expenses
+        if (counted) {
+            for (const DataRow& r : m_api->expensesByMonth(yyyy, mm))
+                expenses += r.value("amount").toDouble();
+        }
         const double benefit = income - cost - expenses;
 
-        totalIncome    += income;
-        totalCost     += cost;
-        totalExpenses += expenses;
-        totalBenefit  += benefit;
+        if (counted) {
+            totalIncome   += income;
+            totalCost     += cost;
+            totalExpenses += expenses;
+            totalBenefit  += benefit;
+        }
 
         const int row = m - 1;
+        const QBrush rowColor = m > lastMonth
+            ? QBrush(LineIcons::colors().muted) : QBrush();
         auto setCell = [&](int col, const QString& text) {
             QTableWidgetItem* item = FinancialUIMap::yearlyTable->item(row, col);
-            if (!item) {
-                item = new QTableWidgetItem();
-                item->setTextAlignment(Qt::AlignCenter);
-                FinancialUIMap::yearlyTable->setItem(row, col, item);
-            }
             item->setText(text);
-            item->setData(Qt::UserRole, m);
+            item->setData(Qt::UserRole, m); // month number for double-click
+            item->setForeground(rowColor);
         };
 
-        setCell(FinancialConstants::COL_YEAR_INCOME,    AppHelpers::formatPrice(income));
-        setCell(FinancialConstants::COL_YEAR_COST,     AppHelpers::formatPrice(cost));
-        setCell(FinancialConstants::COL_YEAR_EXPENSES, AppHelpers::formatPrice(expenses));
-        setCell(FinancialConstants::COL_YEAR_BENEFIT,  AppHelpers::formatPrice(benefit));
-
-        if (benefit < 0) {
-            QTableWidgetItem* item = FinancialUIMap::yearlyTable->item(row, FinancialConstants::COL_YEAR_BENEFIT);
-            if (item) item->setForeground(Qt::red);
-        } else {
-            QTableWidgetItem* item = FinancialUIMap::yearlyTable->item(row, FinancialConstants::COL_YEAR_BENEFIT);
-            if (item) item->setForeground(QColor("#2E7D32"));
-        }
+        FinancialUIMap::yearlyTable->item(row, FinancialConstants::COL_YEAR_MONTH)->setForeground(rowColor);
+        setCell(FinancialConstants::COL_YEAR_INCOME,   AppHelpers::formatAmount(income));
+        setCell(FinancialConstants::COL_YEAR_COST,     counted ? AppHelpers::formatAmount(cost) : QStringLiteral("—"));
+        setCell(FinancialConstants::COL_YEAR_EXPENSES, counted ? AppHelpers::formatAmount(expenses) : QStringLiteral("—"));
+        setCell(FinancialConstants::COL_YEAR_BENEFIT,  counted ? AppHelpers::formatAmount(benefit) : QStringLiteral("—"));
     }
 
     // Total row (row 12)
     auto setTotal = [&](int col, const QString& text) {
-        QTableWidgetItem* item = FinancialUIMap::yearlyTable->item(12, col);
-        if (!item) {
-            item = new QTableWidgetItem();
-            item->setTextAlignment(Qt::AlignCenter);
-            QFont boldFont = item->font();
-            boldFont.setBold(true);
-            boldFont.setPointSize(boldFont.pointSize() + 2);
-            item->setFont(boldFont);
-            FinancialUIMap::yearlyTable->setItem(12, col, item);
-        }
-        item->setText(text);
+        FinancialUIMap::yearlyTable->item(12, col)->setText(text);
     };
-    setTotal(FinancialConstants::COL_YEAR_INCOME,    AppHelpers::formatPrice(totalIncome));
-    setTotal(FinancialConstants::COL_YEAR_COST,     AppHelpers::formatPrice(totalCost));
-    setTotal(FinancialConstants::COL_YEAR_EXPENSES, AppHelpers::formatPrice(totalExpenses));
-    setTotal(FinancialConstants::COL_YEAR_BENEFIT,  AppHelpers::formatPrice(totalBenefit));
+    setTotal(FinancialConstants::COL_YEAR_INCOME,   AppHelpers::formatAmount(totalIncome));
+    setTotal(FinancialConstants::COL_YEAR_COST,     AppHelpers::formatAmount(totalCost));
+    setTotal(FinancialConstants::COL_YEAR_EXPENSES, AppHelpers::formatAmount(totalExpenses));
+    setTotal(FinancialConstants::COL_YEAR_BENEFIT,  AppHelpers::formatAmount(totalBenefit));
 
-    if (totalBenefit < 0) {
-        QTableWidgetItem* item = FinancialUIMap::yearlyTable->item(12, FinancialConstants::COL_YEAR_BENEFIT);
-        if (item) item->setForeground(Qt::red);
-    } else {
-        QTableWidgetItem* item = FinancialUIMap::yearlyTable->item(12, FinancialConstants::COL_YEAR_BENEFIT);
-        if (item) item->setForeground(QColor("#2E7D32"));
-    }
+    m_yearIncomeTotal = totalIncome;
+    m_yearChart->setMonths(monthlyIncome, lastMonth);
+    m_yearTotal->setText(tr("%1 total: %2").arg(yyyy, AppHelpers::formatPrice(totalIncome)));
 }
 
-// ============================================================================
-// LOGOUT
-// ============================================================================
-// LOGOUT
-// ============================================================================
+void FinancialWindow::onYearlySelectChanged()
+{
+    loadYearlyTable();
+}
+
+void FinancialWindow::onYearlyTableDoubleClicked(int row, int column)
+{
+    Q_UNUSED(column)
+    if (row < 0 || row >= 12) return; // ignore total row
+
+    const int year  = FinancialUIMap::yearlySelect->currentData().toInt();
+    const int month = row + 1;
+    const QString mm   = QString("%1").arg(month, 2, 10, QChar('0'));
+    const QString yyyy = QString::number(year);
+
+    int count = 0;
+    const double income = m_api->incomeByMonth(yyyy, mm, &count);
+    const QString monthName = TranslationManager::instance().locale()
+                                  .standaloneMonthName(month, QLocale::LongFormat);
+
+    AppHelpers::showInfo(this,
+                         tr("Transactions: %1\nTotal Income: %2")
+                             .arg(count)
+                             .arg(AppHelpers::formatPrice(income)),
+                         QString("%1 %2").arg(monthName).arg(year));
+}
 
 void FinancialWindow::onLogoutClicked()
 {
-    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId(), m_session->username())) {
+    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId())) {
         return;
     }
     close();

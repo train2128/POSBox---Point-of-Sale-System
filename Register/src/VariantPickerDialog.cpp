@@ -1,163 +1,117 @@
 #include "VariantPickerDialog.h"
-#include "DatabaseManager.h"
-#include "QueryRepository.h"
+#include "LocalApi.h"
 #include "Prefixes.h"
-#include <QVBoxLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QListWidget>
 #include <QPushButton>
-#include <QSqlQuery>
-#include <QSqlError>
+#include <QScrollArea>
+#include <QVBoxLayout>
 #include <QDebug>
+
+namespace {
+constexpr int RowHeight = 62;
+constexpr int MaxRowsShown = 6;
+}
 
 VariantPickerDialog::VariantPickerDialog(const QString& productName,
                                          int productId,
-                                         DatabaseManager* db,
+                                         LocalApi* api,
                                          bool isService,
                                          QWidget* parent)
-    : QDialog(parent)
-    , m_db(db)
-    , m_list(nullptr)
+    : ModernDialog(Look::Band, "box", Tone::Accent, productName, tr("Choose an option"), 420, parent)
+    , m_api(api)
     , m_isService(isService)
 {
     setObjectName("variant-picker-dialog");
-    setWindowTitle(tr("Select Variant"));
-    setModal(true);
-    setFixedWidth(320);
-
-    setupUI(productName);
     loadVariants(productId, isService);
+    addCancelLink();
 }
 
-VariantPickerDialog::~VariantPickerDialog() {}
-
-void VariantPickerDialog::setupUI(const QString& productName)
-{
-    QVBoxLayout* mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(16, 16, 16, 16);
-    mainLayout->setSpacing(12);
-
-    // Product name header
-    QLabel* titleLabel = new QLabel(productName, this);
-    titleLabel->setObjectName("variant-picker-title");
-    titleLabel->setAlignment(Qt::AlignCenter);
-    mainLayout->addWidget(titleLabel);
-
-    // Variant list
-    m_list = new QListWidget(this);
-    m_list->setObjectName("variant-picker-list");
-    m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    mainLayout->addWidget(m_list);
-
-    // OK / Cancel buttons
-    QHBoxLayout* btnLayout = new QHBoxLayout();
-    btnLayout->setSpacing(8);
-
-    QPushButton* okBtn = new QPushButton(tr("OK"), this);
-    okBtn->setObjectName("variant-picker-ok");
-    okBtn->setProperty("btnStyle", "add");
-    okBtn->style()->unpolish(okBtn);
-    okBtn->style()->polish(okBtn);
-
-    QPushButton* cancelBtn = new QPushButton(tr("Cancel"), this);
-    cancelBtn->setObjectName("variant-picker-cancel");
-    cancelBtn->setProperty("btnStyle", "delete");
-    cancelBtn->style()->unpolish(cancelBtn);
-    cancelBtn->style()->polish(cancelBtn);
-
-    btnLayout->addWidget(okBtn);
-    btnLayout->addWidget(cancelBtn);
-    mainLayout->addLayout(btnLayout);
-
-    connect(okBtn,     &QPushButton::clicked, this, &VariantPickerDialog::onOkClicked);
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(m_list,    &QListWidget::itemDoubleClicked, this, &VariantPickerDialog::onItemDoubleClicked);
-}
-
+// Each option is one large row; clicking it chooses straight away.
 void VariantPickerDialog::loadVariants(int productId, bool isService)
 {
-    if (!m_db || productId <= 0) return;
+    if (!m_api || productId <= 0) return;
 
     m_isService = isService;
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::VARIANT_SELECT_BY_PRODUCT);
-    query.addBindValue(productId);
-
-    if (!query.exec()) {
-        qWarning() << "VariantPickerDialog: failed to load variants:" << query.lastError().text();
+    const QList<DataRow> options = m_api->variants(productId);
+    if (!m_api->ok()) {
+        qWarning() << "VariantPickerDialog: failed to load variants:" << m_api->lastError();
         return;
     }
 
-    while (query.next()) {
-        VariantOption opt;
-        opt.id    = query.value("id").toInt();
-        opt.name  = query.value("variant_name").toString();
-        opt.price = query.value("price").toDouble();
-        opt.cost  = query.value("cost").toDouble();
-        opt.stock = query.value("stock").toInt();
+    auto* listWidget = new QWidget;
+    listWidget->setObjectName("variantPickerRows");
+    auto* list = new QVBoxLayout(listWidget);
+    list->setContentsMargins(0, 0, 0, 0);
+    list->setSpacing(8);
 
+    QPushButton* first = nullptr;
+    for (const DataRow& row : options) {
+        VariantOption opt;
+        opt.id    = row.value("id").toInt();
+        opt.name  = row.value("variant_name").toString();
+        opt.price = row.value("price").toDouble();
+        opt.cost  = row.value("cost").toDouble();
+        opt.stock = row.value("stock").toInt();
         m_variants.append(opt);
 
-        QString label;
-        if (isService) {
-            label = QString("%1  —  %2")
-                        .arg(opt.name)
-                        .arg(AppHelpers::formatPrice(opt.price));
-        } else {
-            QString stockStr;
-            if (opt.stock <= 0) {
-                stockStr = tr(" (Out of Stock)");
-            } else {
-                stockStr = QString(tr(" (%1 left)")).arg(opt.stock);
-            }
-            label = QString("%1  —  %2%3")
-                        .arg(opt.name)
-                        .arg(AppHelpers::formatPrice(opt.price))
-                        .arg(stockStr);
-        }
+        auto* button = new QPushButton(listWidget);
+        button->setObjectName("modalChoice");
+        button->setCursor(Qt::PointingHandCursor);
+        const bool available = isService || opt.stock > 0;
+        button->setEnabled(available);
 
-        QListWidgetItem* item = new QListWidgetItem(label, m_list);
-        item->setData(Qt::UserRole, opt.id);
-
-        if (!isService && opt.stock <= 0) {
-            item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
-            item->setForeground(Qt::gray);
+        auto* layout = new QHBoxLayout(button);
+        layout->setContentsMargins(14, 8, 14, 8);
+        auto* name = new QLabel(opt.name, button);
+        name->setObjectName("modalChoiceTitle");
+        auto* right = new QVBoxLayout;
+        right->setSpacing(0);
+        auto* price = new QLabel(AppHelpers::formatPrice(opt.price), button);
+        price->setObjectName("modalChoiceTitle");
+        price->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        right->addWidget(price);
+        for (QLabel* label : {name, price})
+            label->setAttribute(Qt::WA_TransparentForMouseEvents);
+        if (!isService) {
+            auto* stock = new QLabel(opt.stock <= 0 ? tr("Out of stock") : tr("%1 left").arg(opt.stock), button);
+            stock->setObjectName("variantStock");
+            stock->setProperty("level", opt.stock <= 0 ? "out" : opt.stock <= 3 ? "low" : "ok");
+            stock->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            stock->setAttribute(Qt::WA_TransparentForMouseEvents);
+            right->addWidget(stock);
         }
+        layout->addWidget(name, 1);
+        layout->addLayout(right);
+        list->addWidget(button);
+
+        const VariantOption chosen = opt;
+        connect(button, &QPushButton::clicked, this, [this, chosen]() {
+            m_selected = chosen;
+            accept();
+        });
+        if (available && !first)
+            first = button;
+    }
+    if (first) {
+        first->setDefault(true);
+        first->setFocus();
     }
 
-    if (m_list->count() > 0)
-        m_list->setCurrentRow(0);
-
-    // Resize height to fit list content (max 6 rows)
-    int rowHeight = m_list->sizeHintForRow(0);
-    int rows      = qMin(m_list->count(), 6);
-    m_list->setFixedHeight(rowHeight * rows + 8);
-    adjustSize();
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName("variantPickerScroll");
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidgetResizable(true);
+    scroll->setWidget(listWidget);
+    const int rows = qMin(int(options.size()), MaxRowsShown);
+    scroll->setFixedHeight(rows * RowHeight + qMax(0, rows - 1) * list->spacing());
+    body()->addWidget(scroll);
 }
 
 VariantOption VariantPickerDialog::selectedVariant() const
 {
     return m_selected;
-}
-
-void VariantPickerDialog::onOkClicked()
-{
-    QListWidgetItem* item = m_list->currentItem();
-    if (!item) return;
-
-    int selectedId = item->data(Qt::UserRole).toInt();
-    for (const VariantOption& opt : m_variants) {
-        if (opt.id == selectedId) {
-            m_selected = opt;
-            accept();
-            return;
-        }
-    }
-}
-
-void VariantPickerDialog::onItemDoubleClicked()
-{
-    onOkClicked();
 }

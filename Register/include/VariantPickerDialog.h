@@ -1,12 +1,11 @@
 #ifndef VARIANTPICKERDIALOG_H
 #define VARIANTPICKERDIALOG_H
 
-#include <QDialog>
+#include "ModernDialog.h"
 #include <QList>
 #include <QString>
 
-class QListWidget;
-class DatabaseManager;
+class LocalApi;
 
 /**
  * Data for a single selectable variant.
@@ -28,17 +27,16 @@ struct VariantOption {
  * Fetches variants from DB, shows them in a list with name + price.
  * Returns the selected VariantOption on accept.
  */
-class VariantPickerDialog : public QDialog
+class VariantPickerDialog : public ModernDialog
 {
     Q_OBJECT
 
 public:
     explicit VariantPickerDialog(const QString& productName,
                                  int productId,
-                                 DatabaseManager* db,
+                                 LocalApi* api,
                                  bool isService,
                                  QWidget* parent = nullptr);
-    ~VariantPickerDialog();
 
     /**
      * Returns the variant the user selected.
@@ -46,16 +44,10 @@ public:
      */
     VariantOption selectedVariant() const;
 
-private slots:
-    void onOkClicked();
-    void onItemDoubleClicked();
-
 private:
-    void setupUI(const QString& productName);
     void loadVariants(int productId, bool isService);
 
-    DatabaseManager*       m_db;
-    QListWidget*           m_list;
+    LocalApi*             m_api;
     QList<VariantOption>   m_variants;
     VariantOption          m_selected;
     bool                  m_isService;

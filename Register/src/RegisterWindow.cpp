@@ -1,4 +1,7 @@
 #include "RegisterWindow.h"
+#include "MessageDialog.h"
+#include "ModernDialog.h"
+#include "Animations.h"
 #include "ui_RegisterWindow.h"
 #include "UIMap.h"
 #include "RegisterConstants.h"
@@ -11,45 +14,47 @@
 #include "SaveTicketDialog.h"
 #include "OpenTicketsDialog.h"
 #include "UserSession.h"
-#include "DatabaseManager.h"
+#include "LocalApi.h"
+#include "LocalImages.h"
+#include "LocalSettings.h"
+#include "Permissions.h"
 #include "ChangeNotifier.h"
-#include "QueryRepository.h"
 #include "SessionManager.h"
 #include "StyleManager.h"
-#include "TicketEditRequest.h"
-#include "TicketsLock.h"
-#include "CommonConfig.h"
-#include "NotificationManager.h"
-#include "NotificationPanel.h"
 #include "AccessControl.h"
 #include "LogoutManager.h"
+#include "NotificationActions.h"
+#include "NotificationManager.h"
+#include "NotificationBell.h"
 #include "ThermalPrinter.h"
-#include "TranslationManager.h"
-#include <QSqlQuery>
-#include <QSqlError>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QScrollArea>
 #include <QFrame>
 #include <QSet>
 #include <QApplication>
-#include <QCoreApplication>
-#include <QProcess>
 #include <QScreen>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDebug>
-#include <QInputDialog>
-#include <QMessageBox>
+#include <algorithm>
 
-RegisterWindow::RegisterWindow(UserSession* session, DatabaseManager* dbManager,
+namespace {
+constexpr int ConfirmTextMargin = 12;
+}
+
+RegisterWindow::RegisterWindow(UserSession* session, LocalApi* api,
+                               LocalImages* images,
                                ChangeNotifier* notifier, QWidget* parent)
     : QMainWindow(parent)
     , ui(new Ui::RegisterWindow)
     , m_session(session)
-    , m_db(dbManager)
+    , m_api(api)
+    , m_images(images)
     , m_notifier(notifier)
+    , m_resizeRebuildTimer(nullptr)
     , m_searchTimer(new QTimer(this))
     , m_currentSearchText("")
     , m_currentCategoryFilter(-1)
@@ -60,22 +65,29 @@ RegisterWindow::RegisterWindow(UserSession* session, DatabaseManager* dbManager,
     , m_openTicketEditMode(false)
     , m_openTicketEditId(-1)
     , m_openTicketAdvance(0.0)
-    , m_notificationManager(nullptr)
-    , m_notificationPanel(nullptr)
 {
     ui->setupUi(this);
+    m_confirmText = tr("Confirm");
 
     // Apply global styles
-    StyleManager::applyGlobalStyles(this, m_db->database());
+    StyleManager::applySavedTheme(this);
 
     // Initialize UI mapping
     UIMap::initialize(ui);
+    buildLayout();
 
     // Setup notification system
-    m_notificationManager = new NotificationManager(dbManager, this);
-    m_notificationManager->checkAndGenerate();
-    connect(m_notificationManager, &NotificationManager::notificationsChanged, this, &RegisterWindow::updateNotificationBadge);
-    updateNotificationBadge();
+    m_bell = new NotificationBell(m_api, UIMap::notificationBtn,
+                                  m_session ? m_session->username() : QString(),
+                                  m_notifier, this);
+
+
+    // Bounded staleness: refresh income directly on every tick, not only
+    // when notifications_sync happens to succeed and emit. A dead push path
+    // then costs at most one interval instead of "until my next own sale".
+    connect(m_bell->refreshTimer(), &QTimer::timeout, this, [this]() { updateDailyIncome(); });
+    connect(m_bell->manager(), &NotificationManager::notificationsChanged,
+            this, [this]() { updateDailyIncome(); });
 
     // Setup
     setupUI();
@@ -84,6 +96,8 @@ RegisterWindow::RegisterWindow(UserSession* session, DatabaseManager* dbManager,
     // Load data
     loadCategories();
     loadProducts();
+    updateDailyIncome();
+    updateCartTotal();
 
     // Show maximized
     showMaximized();
@@ -96,59 +110,27 @@ RegisterWindow::~RegisterWindow()
 
 void RegisterWindow::setupUI()
 {
+    setWindowTitle(tr("POSBox - Register"));
+
     // Configure search timer
     m_searchTimer->setSingleShot(true);
     m_searchTimer->setInterval(AppConstants::SEARCH_DELAY_MS);
 
+    // Debounced grid rebuild: resize events arrive in a storm while the
+    // window is dragged; rebuild once the size settles.
+    m_resizeRebuildTimer = new QTimer(this);
+    m_resizeRebuildTimer->setSingleShot(true);
+    m_resizeRebuildTimer->setInterval(150);
+    connect(m_resizeRebuildTimer, &QTimer::timeout, this, &RegisterWindow::displayProducts);
+
     // Update user display
     updateUserDisplay();
-
-    // Apply translatable strings
-    retranslateUi();
-}
-
-void RegisterWindow::retranslateUi()
-{
-    setWindowTitle(tr("POSBox - Register"));
-
-    // Top bar
-    if (UIMap::ticketsBtn)
-        UIMap::ticketsBtn->setText(tr("Tickets"));
-    if (UIMap::notificationBtn)
-        UIMap::notificationBtn->setToolTip(tr("Notifications"));
-    if (UIMap::logoutBtn)
-        UIMap::logoutBtn->setToolTip(tr("Logout"));
-
-    // Products section
-    if (UIMap::searchBar)
-        UIMap::searchBar->setPlaceholderText(tr("Search products or scan barcode..."));
-    if (UIMap::customItemBtn)
-        UIMap::customItemBtn->setText(tr("Custom Item"));
-
-    // Cart section
-    if (UIMap::withdrawBtn)
-        UIMap::withdrawBtn->setText(tr("Withdraw"));
-    if (UIMap::discountBtn)
-        UIMap::discountBtn->setToolTip(tr("Apply Discount"));
-    if (UIMap::confirmBtn)
-        UIMap::confirmBtn->setText(tr("Confirm Sale"));
-    if (UIMap::cancelBtn)
-        UIMap::cancelBtn->setText(tr("Cancel"));
-
-    // Update "All Categories" item in filterBox
-    if (UIMap::filterBox && UIMap::filterBox->count() > 0) {
-        UIMap::filterBox->setItemText(0, tr("All Categories"));
-    }
-
-    updateCartTotal();
-    updateOpenTicketButton();
 }
 
 void RegisterWindow::setupConnections()
 {
     // Top bar
-    connect(UIMap::ticketsBtn, &QPushButton::clicked, this, &RegisterWindow::onTicketsClicked);
-    connect(UIMap::notificationBtn, &QPushButton::clicked, this, &RegisterWindow::onNotificationClicked);
+    connect(UIMap::notificationBtn, &QPushButton::clicked, m_bell, &NotificationBell::togglePanel);
     connect(UIMap::logoutBtn, &QPushButton::clicked, this, &RegisterWindow::onLogoutClicked);
 
     // Products section
@@ -158,6 +140,13 @@ void RegisterWindow::setupConnections()
     connect(UIMap::customItemBtn, &QPushButton::clicked, this, &RegisterWindow::onCustomItemClicked);
     connect(m_searchTimer, &QTimer::timeout, this, &RegisterWindow::onSearchTimer);
 
+    // Product images arrive asynchronously from the LocalImages worker
+    // (loaded and scaled on a worker thread, never on the GUI thread).
+    if (m_images) {
+        connect(m_images, &LocalImages::pixmapReady,
+                this, &RegisterWindow::onImageReady);
+    }
+
     // Cart section
     connect(UIMap::discountBtn, &QPushButton::clicked, this, &RegisterWindow::onDiscountClicked);
     connect(UIMap::openTicketsBtn, &QPushButton::clicked, this, &RegisterWindow::onOpenTicketsClicked);
@@ -165,56 +154,69 @@ void RegisterWindow::setupConnections()
     connect(UIMap::confirmBtn, &QPushButton::clicked, this, &RegisterWindow::onConfirmClicked);
     connect(UIMap::cancelBtn, &QPushButton::clicked, this, &RegisterWindow::onCancelClicked);
 
-    // Language change notifications
-    connect(&TranslationManager::instance(), &TranslationManager::languageChanged,
-            this, &RegisterWindow::retranslateUi);
-
     // Change notifications
     if (m_notifier) {
         connect(m_notifier, &ChangeNotifier::productChanged,
-                this, [this](int) { loadProducts(); });
+                this, [this](int) { loadProducts(); m_bell->refreshNow(); });
+        connect(m_notifier, &ChangeNotifier::ticketCreated,
+                this, [this](int) { updateDailyIncome(); m_bell->refreshNow(); });
+        connect(m_notifier, &ChangeNotifier::ticketUpdated,
+                this, [this](int) { updateDailyIncome(); m_bell->refreshNow(); });
         connect(m_notifier, &ChangeNotifier::categoryChanged,
                 this, [this](int) { loadCategories(); });
-        connect(m_notifier, &ChangeNotifier::ticketEditRequested,
-                this, [this](int) { checkPendingEditRequest(); });
+        connect(m_notifier, &ChangeNotifier::appNavigateRequested,
+                this, &RegisterWindow::handleNavigation);
     }
 }
 
 void RegisterWindow::updateUserDisplay()
 {
     if (m_session && UIMap::userLabel) {
-        QString displayText = QString(tr("%1 (%2)"))
+        QString displayText = QString("%1 (%2)")
         .arg(m_session->displayName())
-            .arg(m_session->role());
+            .arg(AppHelpers::roleName(m_session->role()));
         UIMap::userLabel->setText(displayText);
     }
 }
 
+void RegisterWindow::updateDailyIncome()
+{
+    if (!m_api || !UIMap::incomeLabel) return;
+
+    double income = m_api->dailyIncome(QDate::currentDate().toString("yyyy-MM-dd"));
+    if (!m_api->ok()) {
+        qWarning() << "Failed to load daily income:" << m_api->lastError();
+        return;
+    }
+
+    Animations::animateValues(UIMap::incomeLabel, {income}, [](const QVector<double>& shown) {
+        UIMap::incomeLabel->setText(tr("Today: %1").arg(AppHelpers::formatPrice(shown[0])));
+    });
+}
+
 void RegisterWindow::loadCategories()
 {
-    if (!m_db || !UIMap::filterBox) return;
+    if (!m_api || !UIMap::filterBox) return;
 
     m_categories.clear();
     UIMap::filterBox->clear();
 
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::CATEGORY_SELECT_ALL);
-
-    if (!query.exec()) {
-        qWarning() << "Failed to load categories:" << query.lastError().text();
+    QList<DataRow> rows = m_api->categories();
+    if (!m_api->ok()) {
+        qWarning() << "Failed to load categories:" << m_api->lastError();
         return;
     }
 
     UIMap::filterBox->addItem(tr("All Categories"), -1);
 
-    while (query.next()) {
+    for (const DataRow& row : rows) {
         QHash<QString, QVariant> category;
-        category["id"] = query.value("id");
-        category["name"] = query.value("name");
-        category["description"] = query.value("description");
+        category["id"] = row.value("id");
+        category["name"] = row.value("name");
+        category["description"] = row.value("description");
 
         m_categories.append(category);
-        UIMap::filterBox->addItem(query.value("name").toString(), query.value("id"));
+        UIMap::filterBox->addItem(row.value("name").toString(), row.value("id"));
     }
 
     qDebug() << "Loaded" << m_categories.size() << "categories";
@@ -222,35 +224,43 @@ void RegisterWindow::loadCategories()
 
 void RegisterWindow::loadProducts()
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
-    m_products.clear();
-
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::PRODUCT_SELECT_ALL);
-
-    if (!query.exec()) {
-        qWarning() << "Failed to load products:" << query.lastError().text();
+    const QList<DataRow> rows = m_api->products();
+    if (!m_api->ok()) {
+        m_products.clear();
+        qWarning() << "Failed to load products:" << m_api->lastError();
         return;
     }
 
-    while (query.next()) {
+    QList<QHash<QString, QVariant>> loaded;
+    loaded.reserve(rows.size());
+    for (const DataRow& row : rows) {
         QHash<QString, QVariant> product;
-        product["id"] = query.value("id");
-        product["name"] = query.value("name");
-        product["price"] = query.value("price");
-        product["cost"] = query.value("cost");
-        product["stock"] = query.value("stock");
-        product["category_id"] = query.value("category_id");
-        product["category"] = query.value("category_name");
-        product["image_path"] = query.value("image_path");
-        product["is_service"] = query.value("is_service");
-        product["has_variants"] = query.value("has_variants");
+        product["id"] = row.value("id");
+        product["name"] = row.value("name");
+        product["price"] = row.value("price");
+        product["cost"] = row.value("cost");
+        product["stock"] = row.value("stock");
+        product["category_id"] = row.value("category_id");
+        product["category"] = row.value("category_name");
+        product["image_path"] = row.value("image_path");
+        product["is_service"] = row.value("is_service");
+        product["has_variants"] = row.value("has_variants");
 
-        m_products.append(product);
+        loaded.append(product);
     }
 
-    qDebug() << "Loaded" << m_products.size() << "products";
+    // Refreshes are frequent (every sale, on every station) and usually change
+    // nothing this screen shows: rebuild the grid only when something did. The
+    // out-of-stock visibility setting counts, since it can change at any time.
+    const bool showOutOfStock = LocalSettings::load().showOosProducts;
+    if (m_productsLoaded && loaded == m_products && showOutOfStock == m_loadedShowOutOfStock)
+        return;
+
+    m_products = loaded;
+    m_productsLoaded = true;
+    m_loadedShowOutOfStock = showOutOfStock;
     displayProducts();
 }
 
@@ -274,7 +284,9 @@ void RegisterWindow::displayProducts()
     int col = 0;
 
     for (const auto& product : filtered) {
-        ProductButton* btn = ProductButtonCreator::createButton(product, m_db);
+        // Deferred images: the button appears instantly with default art;
+        // the real image is downloaded progressively after the window is up.
+        ProductButton* btn = ProductButtonCreator::createButtonDeferred(product);
 
         connect(btn, &ProductButton::clicked, this, &RegisterWindow::onProductButtonClicked);
 
@@ -287,8 +299,41 @@ void RegisterWindow::displayProducts()
         }
     }
 
-    // No column stretch — buttons are fixed size, left-aligned
-    // Only stretch the trailing empty row to push all content to the top
+    // Collect the image each button wants (keyed by filename) and serve:
+    // cached ones instantly from RAM, the rest asynchronously via the
+    // LocalImages worker. The grid itself is already fully built.
+    m_buttonsByImage.clear();
+    for (QWidget* w : m_productButtons) {
+        auto* btn = qobject_cast<ProductButton*>(w);
+        if (!btn)
+            continue;
+        const QString path = btn->property("imagePath").toString();
+        if (!path.isEmpty())
+            m_buttonsByImage[QFileInfo(path).fileName()].append(btn);
+    }
+
+    const int imageSize = RegisterConstants::PRODUCT_IMAGE_SIZE;
+    for (auto it = m_buttonsByImage.constBegin(); it != m_buttonsByImage.constEnd(); ++it) {
+        const QString name = it.key();
+        if (!m_images)
+            break;
+        if (m_images->isCached(name, imageSize)) {
+            const QPixmap pm = m_images->thumbnail(name, imageSize);
+            for (const QPointer<ProductButton>& btn : it.value()) {
+                if (btn)
+                    ProductButtonCreator::applyPixmap(btn, pm);
+            }
+        } else if (!m_requestedImages.contains(name)) {
+            m_requestedImages.insert(name);
+            m_images->requestPixmap(name, imageSize);
+        }
+    }
+
+    // Tiles are fixed width and packed to the left: an empty column after the
+    // last one takes the spare width, and an empty row pushes them to the top.
+    for (int column = 0; column < UIMap::itemsGridLayout->columnCount(); ++column)
+        UIMap::itemsGridLayout->setColumnStretch(column, 0);
+    UIMap::itemsGridLayout->setColumnStretch(columns, 1);
     UIMap::itemsGridLayout->setRowStretch(row + 1, 1);
 }
 
@@ -315,12 +360,18 @@ int RegisterWindow::calculateColumnCount() const
     availableWidth -= (RegisterConstants::PRODUCT_GRID_MARGIN * 2);
     int cellSize = RegisterConstants::PRODUCT_BUTTON_SIZE + RegisterConstants::PRODUCT_GRID_SPACING;
 
-    return qMax(RegisterConstants::MIN_COLUMNS, availableWidth / cellSize);
+    // The last column needs no gap after it.
+    return qMax(RegisterConstants::MIN_COLUMNS,
+                (availableWidth + RegisterConstants::PRODUCT_GRID_SPACING) / cellSize);
 }
 
 void RegisterWindow::clearProductGrid()
 {
     if (!UIMap::itemsGridLayout) return;  // CHANGED
+
+    // Pending image maps belong to the buttons being destroyed.
+    if (m_resizeRebuildTimer) m_resizeRebuildTimer->stop();
+    m_buttonsByImage.clear();
 
     QLayoutItem* item;
     while ((item = UIMap::itemsGridLayout->takeAt(0)) != nullptr) {  // CHANGED
@@ -330,21 +381,23 @@ void RegisterWindow::clearProductGrid()
     m_productButtons.clear();
 }
 
+void RegisterWindow::onImageReady(const QString& filename, int maxSize, const QImage& image)
+{
+    if (maxSize != RegisterConstants::PRODUCT_IMAGE_SIZE || image.isNull())
+        return;  // not a product-grid request (or missing: default art stays)
+
+    const QPixmap pm = QPixmap::fromImage(image);
+    const QList<QPointer<ProductButton>> buttons = m_buttonsByImage.value(filename);
+    for (const QPointer<ProductButton>& btn : buttons) {
+        if (btn)
+            ProductButtonCreator::applyPixmap(btn, pm);
+    }
+}
+
 QList<QHash<QString, QVariant>> RegisterWindow::filterProducts()
 {
-    // Read OOS visibility setting from settings.json.
-    // Default true (show OOS items) if the key has never been written.
-    bool showOOS = true;
-    {
-        const QString settingsPath = POSConfig::getAppDataPath() + POSConfig::SETTINGS_FILENAME;
-        QFile sf(settingsPath);
-        if (sf.open(QIODevice::ReadOnly)) {
-            const QJsonObject obj = QJsonDocument::fromJson(sf.readAll()).object();
-            sf.close();
-            if (obj.contains("show_oos_products"))
-                showOOS = obj.value("show_oos_products").toBool(true);
-        }
-    }
+    // OOS visibility is a per-machine setting.
+    const bool showOOS = LocalSettings::load().showOosProducts;
 
     QList<QHash<QString, QVariant>> filtered;
 
@@ -395,7 +448,11 @@ QList<QHash<QString, QVariant>> RegisterWindow::filterProducts()
 void RegisterWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
-    displayProducts();
+    // Debounce: a drag fires resize events continuously and each rebuild
+    // recreates the whole grid; wait until the size settles.
+    if (m_resizeRebuildTimer)
+        m_resizeRebuildTimer->start();
+    updateCheckoutState();
 }
 
 // ===== SEARCH & FILTER =====
@@ -432,7 +489,7 @@ void RegisterWindow::onProductButtonClicked()
         QString productName = btn->property("productName").toString();
         bool isService = btn->property("isService").toBool();
 
-        VariantPickerDialog picker(productName, productId, m_db, isService, this);
+        VariantPickerDialog picker(productName, productId, m_api, isService, this);
         if (picker.exec() != QDialog::Accepted) return;
 
         addVariantToCart(productId, picker.selectedVariant());
@@ -466,7 +523,7 @@ void RegisterWindow::addToCart(int productId)
     // Check stock
     if (!isService && stock <= 0) {
         AppHelpers::showWarning(this,
-                                QString(tr("Product '%1' is out of stock.")).arg(name));
+                                tr("Product '%1' is out of stock.").arg(name));
         return;
     }
 
@@ -474,7 +531,7 @@ void RegisterWindow::addToCart(int productId)
     if (m_cart.contains(productId)) {
         if (!isService && m_cart[productId].quantity >= stock) {
             AppHelpers::showWarning(this,
-                                    QString(tr(RegisterConstants::MSG_STOCK_EXCEEDED))
+                                    QString(AppHelpers::trMsg(RegisterConstants::MSG_STOCK_EXCEEDED))
                                         .arg(name).arg(stock));
             return;
         }
@@ -514,13 +571,13 @@ void RegisterWindow::addVariantToCart(int productId, const VariantOption& varian
 
     // Check stock for non-service variants
     if (!parentIsService && variant.stock <= 0) {
-        AppHelpers::showWarning(this, QString(tr("Variant '%1' is out of stock.")).arg(variant.name));
+        AppHelpers::showWarning(this, tr("Variant '%1' is out of stock.").arg(variant.name));
         return;
     }
 
     if (m_cart.contains(cartKey)) {
         if (!parentIsService && m_cart[cartKey].quantity >= variant.stock) {
-            AppHelpers::showWarning(this, QString(tr(RegisterConstants::MSG_STOCK_EXCEEDED))
+            AppHelpers::showWarning(this, QString(AppHelpers::trMsg(RegisterConstants::MSG_STOCK_EXCEEDED))
                                         .arg(variant.name).arg(variant.stock));
             return;
         }
@@ -550,6 +607,31 @@ void RegisterWindow::updateCartDisplay()
 {
     if (!UIMap::cartLayout) return;
 
+    // Which rows are coming and going, for the animations. A bulk change (a
+    // cleared cart, a ticket loaded for editing) just appears at once.
+    QSet<int> previousKeys;
+    for (int i = 0; i < UIMap::cartLayout->count(); ++i) {
+        if (auto* row = qobject_cast<CartItemWidget*>(UIMap::cartLayout->itemAt(i)->widget()))
+            previousKeys.insert(row->cartKey());
+    }
+    QSet<int> addedKeys;
+    for (auto it = m_cart.constBegin(); it != m_cart.constEnd(); ++it) {
+        if (!previousKeys.contains(it.key()))
+            addedKeys.insert(it.key());
+    }
+    int removedRowIndex = -1;
+    QPixmap removedRowPicture;
+    if (addedKeys.isEmpty() && !m_cart.isEmpty() && previousKeys.size() == m_cart.size() + 1) {
+        for (int i = 0; i < UIMap::cartLayout->count(); ++i) {
+            auto* row = qobject_cast<CartItemWidget*>(UIMap::cartLayout->itemAt(i)->widget());
+            if (row && !m_cart.contains(row->cartKey())) {
+                removedRowIndex = i;
+                removedRowPicture = Animations::rowSnapshot(row);
+                break;
+            }
+        }
+    }
+
     // Remove all cart item widgets, keeping the trailing stretch at the end
     while (UIMap::cartLayout->count() > 1) {
         QLayoutItem* item = UIMap::cartLayout->takeAt(0);
@@ -560,9 +642,8 @@ void RegisterWindow::updateCartDisplay()
     }
 
     // Add cart items directly to the layout
-    for (auto it = m_cart.constBegin(); it != m_cart.constEnd(); ++it) {
-        int cartKey = it.key();
-        const CartItem& item = it.value();
+    for (const int cartKey : cartKeysInOrder()) {
+        const CartItem& item = m_cart[cartKey];
 
         int maxQty;
         if (item.isService || item.stock <= 0)
@@ -579,7 +660,13 @@ void RegisterWindow::updateCartDisplay()
                 this, &RegisterWindow::onCartItemRemove);
 
         UIMap::cartLayout->insertWidget(UIMap::cartLayout->count() - 1, widget);
+
+        if (addedKeys.size() == 1 && addedKeys.contains(cartKey))
+            Animations::rowIn(widget);
     }
+
+    if (removedRowIndex >= 0)
+        Animations::collapseRow(UIMap::cartLayout, removedRowIndex, removedRowPicture);
 
     // Add separator + discount items if needed
     if (!m_discounts.isEmpty() && !m_cart.isEmpty()) {
@@ -633,19 +720,68 @@ void RegisterWindow::updateCartTotal()
     // Calculate final total
     m_cartTotal = qMax(0.0, subtotal - totalDiscount);
 
-    // Update label
+    // Update labels
     if (UIMap::totalLabel) {
-        if (totalDiscount > 0) {
+        Animations::animateValues(UIMap::totalLabel, {subtotal, totalDiscount, m_cartTotal},
+                                  [this](const QVector<double>& shown) {
+            m_subtotalLabel->setText(AppHelpers::formatAmount(shown[0]));
+            m_discountLabel->setText("-" + AppHelpers::formatAmount(shown[1]));
             UIMap::totalLabel->setText(
-                QString(tr("Subtotal: %1\nDiscount: -%2\nTotal: %3"))
-                    .arg(AppHelpers::formatPrice(subtotal))
-                    .arg(AppHelpers::formatPrice(totalDiscount))
-                    .arg(AppHelpers::formatPrice(m_cartTotal)));
-        } else {
-            UIMap::totalLabel->setText(
-                QString(tr("Total: %1")).arg(AppHelpers::formatPrice(m_cartTotal)));
-        }
+                QString("%1 %2").arg(AppHelpers::formatAmount(shown[2]), AppConstants::CURRENCY));
+        });
     }
+    m_totalsDetail->setVisible(totalDiscount > 0);
+
+    updateCheckoutState();
+}
+
+// Everything in the cart panel that follows from the cart's contents.
+void RegisterWindow::updateCheckoutState()
+{
+    const bool empty = m_cart.isEmpty();
+
+    int units = 0;
+    for (const auto& item : m_cart)
+        units += item.quantity;
+    m_cartCountLabel->setText(QString("%1 %2").arg(units).arg(units == 1 ? "item" : "items"));
+    m_cartCountLabel->setVisible(!empty);
+
+    UIMap::cart->setVisible(!empty);
+    m_cartEmptyHint->setVisible(empty);
+
+    // The amount goes on Confirm when it fits. The total above always shows it.
+    const QString withAmount = QString("%1  ·  %2 %3").arg(m_confirmText,
+                                                           AppHelpers::formatAmount(m_cartTotal),
+                                                           AppConstants::CURRENCY);
+    const int roomForText = UIMap::confirmBtn->width() - 2 * ConfirmTextMargin;
+    const bool amountFits = UIMap::confirmBtn->fontMetrics().horizontalAdvance(withAmount) <= roomForText;
+    UIMap::confirmBtn->setText(!empty && amountFits ? withAmount : m_confirmText);
+    UIMap::confirmBtn->setEnabled(!empty);
+    UIMap::cancelBtn->setEnabled(!empty || !m_discounts.isEmpty() || m_editMode);
+}
+
+void RegisterWindow::setCheckoutLabels(const QString& confirm, const QString& cancel)
+{
+    m_confirmText = confirm;
+    UIMap::cancelBtn->setText(cancel);
+    updateCheckoutState();
+}
+
+QList<int> RegisterWindow::cartKeysInOrder() const
+{
+    QList<int> keys = m_cart.keys();
+    std::sort(keys.begin(), keys.end(), [this](int a, int b) {
+        return m_cart[a].addedOrder < m_cart[b].addedOrder;
+    });
+    return keys;
+}
+
+QList<CartItem> RegisterWindow::cartInOrder() const
+{
+    QList<CartItem> items;
+    for (const int key : cartKeysInOrder())
+        items << m_cart[key];
+    return items;
 }
 
 void RegisterWindow::onCartQuantityChanged(int cartKey, int newQuantity)
@@ -679,16 +815,44 @@ void RegisterWindow::clearCart()
 bool RegisterWindow::validateTransaction()
 {
     if (m_cart.isEmpty()) {
-        AppHelpers::showWarning(this, tr(RegisterConstants::MSG_CART_EMPTY));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(RegisterConstants::MSG_CART_EMPTY));
         return false;
     }
 
-    // Check stock for all items
-    for (const auto& item : m_cart) {
-        if (item.isService) continue;
-
-        // TODO: Get current stock from database
-        // For now, assume stock is valid
+    // Re-check stock against LIVE data before sending: the cart snapshot is
+    // taken at add-to-cart time, and another register may have sold the last
+    // unit since (the grid refreshes within a second; the cart does not).
+    // The sale transaction enforces this too — catching it here keeps the cart intact.
+    if (m_api) {
+        QStringList shortages;
+        for (const auto& item : m_cart) {
+            if (item.isService) continue;
+            if (item.variantId > 0) {
+                const QJsonObject chk = m_api->stockCheckVariant(item.variantId);
+                if (!m_api->ok()) continue;   // transport error: the sale call reports it
+                if (chk.value("is_service").toBool()) continue;
+                const int available = chk.value("stock").toInt();
+                if (available < item.quantity)
+                    shortages << tr("- %1 (need %2, %3 available)")
+                                     .arg(item.name).arg(item.quantity).arg(available);
+            } else if (item.originalProductId > 0) {
+                const QJsonObject chk = m_api->stockCheckProduct(item.originalProductId);
+                if (!m_api->ok()) continue;
+                if (chk.value("is_service").toBool()) continue;
+                const int available = chk.value("stock_quantity").toInt();
+                if (available < item.quantity)
+                    shortages << tr("- %1 (need %2, %3 available)")
+                                     .arg(item.name).arg(item.quantity).arg(available);
+            }
+        }
+        if (!shortages.isEmpty()) {
+            AppHelpers::showWarning(this,
+                                    tr("The following items no longer have enough stock:\n\n") +
+                                        shortages.join("\n") +
+                                        tr("\n\nPlease adjust the cart to continue."));
+            loadProducts();   // grid was stale; show what is actually there
+            return false;
+        }
     }
 
     return true;
@@ -699,7 +863,7 @@ void RegisterWindow::processTransaction()
     if (!validateTransaction()) return;
 
     if (!m_session) {
-        AppHelpers::showError(this, tr(RegisterConstants::MSG_NO_USER_LOGGED_IN));
+        AppHelpers::showError(this, AppHelpers::trMsg(RegisterConstants::MSG_NO_USER_LOGGED_IN));
         return;
     }
 
@@ -716,89 +880,45 @@ void RegisterWindow::processTransaction()
 
     double total = qMax(0.0, subtotal - totalDiscount);
 
-    // Generate ticket number
-    QString ticketNumber = AppHelpers::generateTicketNumber();
+    // One transaction: ticket + items + stock + flags. It
+    // returns the final ticket number (collision-safe across terminals).
+    QVariantMap header;
+    header["ticket_number"] = AppHelpers::generateTicketNumber();
+    header["date"] = QDate::currentDate().toString("yyyy-MM-dd");
+    header["time"] = QTime::currentTime().toString("HH:mm:ss");
+    header["seller_username"] = m_session->username();
+    header["seller_display_name"] = m_session->displayName();
+    header["subtotal"] = subtotal;
+    header["discount_amount"] = totalDiscount;
+    header["tax_amount"] = 0.0;
+    header["total"] = total;
+    header["payment_method"] = "CASH";
+    header["status"] = "COMPLETED";
+    header["deposit_amount"] = 0.0;
 
-    // Insert ticket
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::TICKET_INSERT);
-    query.addBindValue(ticketNumber);
-    query.addBindValue(QDate::currentDate());
-    query.addBindValue(QTime::currentTime());
-    query.addBindValue(m_session->username());
-    query.addBindValue(m_session->displayName());
-    query.addBindValue(subtotal);
-    query.addBindValue(totalDiscount);
-    query.addBindValue(0.0);  // tax_amount
-    query.addBindValue(total);
-    query.addBindValue("CASH");
-    query.addBindValue("COMPLETED");
-    query.addBindValue(QVariant());  // customer_name
-    query.addBindValue(QVariant());  // customer_phone
-    query.addBindValue(0.0);  // deposit_amount
-    query.addBindValue(QVariant());  // description
-    query.addBindValue(QVariant());  // due_date
+    QList<QVariantMap> items;
+    for (const CartItem& item : cartInOrder()) {
+        QVariantMap it;
+        it["product_id"] = item.originalProductId > 0 ? QVariant(item.originalProductId) : QVariant();
+        it["variant_id"] = item.variantId > 0 ? QVariant(item.variantId) : QVariant();
+        it["product_name"] = item.name;
+        it["quantity"] = item.quantity;
+        it["unit_price"] = item.price;
+        it["unit_cost"] = item.cost;
+        it["total_price"] = item.price * item.quantity;
+        it["is_service"] = item.isService;
+        items << it;
+    }
 
-    if (!query.exec()) {
+    QString ticketNumber;
+    int ticketId = m_api->completeSale(header, items, &ticketNumber);
+    if (ticketId <= 0) {
         AppHelpers::showError(this,
-                              QString(tr("%1\n\n%2"))
-                                  .arg(tr(RegisterConstants::MSG_TRANSACTION_FAILED))
-                                  .arg(query.lastError().text()));
+                              QString("%1\n\n%2")
+                                  .arg(AppHelpers::trMsg(RegisterConstants::MSG_TRANSACTION_FAILED))
+                                  .arg(m_api->lastError()));
+        loadProducts();   // may have been refused on stock: show reality
         return;
-    }
-
-    int ticketId = query.lastInsertId().toInt();
-
-    // Insert ticket items
-    for (const auto& item : m_cart) {
-        QSqlQuery itemQuery(m_db->database());
-        itemQuery.prepare(Queries::TICKET_ITEM_INSERT);
-        itemQuery.addBindValue(ticketId);
-        itemQuery.addBindValue(item.originalProductId);
-        itemQuery.addBindValue(QVariant());  // variant_id
-        itemQuery.addBindValue(item.name);
-        itemQuery.addBindValue(QVariant());  // variant_name
-        itemQuery.addBindValue(QVariant());  // category_name
-        itemQuery.addBindValue(QVariant());  // barcode
-        itemQuery.addBindValue(item.quantity);
-        itemQuery.addBindValue(item.price);
-        itemQuery.addBindValue(item.cost);
-        itemQuery.addBindValue(item.price * item.quantity);
-
-        if (!itemQuery.exec()) {
-            qWarning() << "Failed to insert ticket item:" << itemQuery.lastError().text();
-        }
-    }
-
-    // Decrement stock for all sold items
-    for (const auto& item : m_cart) {
-        if (item.isService) continue;  // services and custom items have no stock
-
-        if (item.variantId != -1) {
-            // Variant item — decrement variant stock
-            QSqlQuery stockQuery(m_db->database());
-            stockQuery.prepare(Queries::VARIANT_UPDATE_STOCK);
-            stockQuery.addBindValue(-item.quantity);
-            stockQuery.addBindValue(item.variantId);
-            if (!stockQuery.exec()) {
-                qWarning() << "Failed to decrement variant stock for variant"
-                           << item.variantId << ":" << stockQuery.lastError().text();
-            }
-            // Check if variant stock hit 0 and track out_of_stock_since
-            updateVariantOutOfStock(item.variantId);
-        } else if (item.originalProductId != -1) {
-            // Regular product — decrement product stock
-            QSqlQuery stockQuery(m_db->database());
-            stockQuery.prepare(Queries::PRODUCT_UPDATE_STOCK);
-            stockQuery.addBindValue(-item.quantity);
-            stockQuery.addBindValue(item.originalProductId);
-            if (!stockQuery.exec()) {
-                qWarning() << "Failed to decrement product stock for product"
-                           << item.originalProductId << ":" << stockQuery.lastError().text();
-            }
-            // Check if product stock hit 0 and track out_of_stock_since
-            updateProductOutOfStock(item.originalProductId, item.variantId != -1);
-        }
     }
 
     // Notify inventory app of stock changes
@@ -806,6 +926,12 @@ void RegisterWindow::processTransaction()
         m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, 0);
         m_notifier->notifyChange(ChangeType::TICKET_CREATED, ticketId);
     }
+
+    // This register made the sale itself: refresh right away instead of
+    // waiting for the shared-memory loopback (which does not deliver on
+    // Windows and fails silently there).
+    updateDailyIncome();
+    m_bell->refreshNow();
 
     // Show success dialog with print option
     showTicketCompletedDialog(ticketId);
@@ -835,7 +961,7 @@ void RegisterWindow::onCancelClicked()
 
     if (m_cart.isEmpty() && m_discounts.isEmpty()) return;
 
-    if (AppHelpers::confirmAction(this, tr(RegisterConstants::MSG_CANCEL_CONFIRM))) {
+    if (AppHelpers::confirmAction(this, AppHelpers::trMsg(RegisterConstants::MSG_CANCEL_CONFIRM))) {
         clearCart();
     }
 }
@@ -851,48 +977,10 @@ void RegisterWindow::onDiscountRemove(int discountIndex)
 
 // ===== STUB METHODS (Coming Soon) =====
 
-void RegisterWindow::onTicketsClicked()
-{
-    if (!m_session) return;
-
-    if (TicketsLock::isRunning()) {
-        // Tickets is already open — notify it to come to front
-        if (m_notifier)
-            m_notifier->notifyChange(ChangeType::TICKET_UPDATED, 0);
-        return;
-    }
-
-    // Tickets not running — launch it
-    QString executable = QCoreApplication::applicationDirPath() + "/Tickets";
-
-    QStringList args;
-    args << "--user" << m_session->username();
-
-    if (!QProcess::startDetached(executable, args))
-        AppHelpers::showError(this, tr("Failed to launch Tickets application."));
-}
-
-void RegisterWindow::onNotificationClicked()
-{
-    if (!m_notificationPanel) {
-        QString username = m_session ? m_session->username() : "";
-        m_notificationPanel = new NotificationPanel(m_notificationManager, username, m_db->database(), this);
-    }
-
-    if (m_notificationPanel->isVisible()) {
-        m_notificationPanel->hide();
-    } else {
-        QPoint btnPos = UIMap::notificationBtn->mapToGlobal(QPoint(0, 0));
-        m_notificationPanel->move(btnPos.x() - m_notificationPanel->width() + UIMap::notificationBtn->width(), 
-                                 btnPos.y() + UIMap::notificationBtn->height());
-        m_notificationPanel->show();
-    }
-}
-
 void RegisterWindow::onDiscountClicked()
 {
     if (m_cart.isEmpty()) {
-        AppHelpers::showWarning(this, tr(RegisterConstants::MSG_CART_EMPTY));
+        AppHelpers::showWarning(this, AppHelpers::trMsg(RegisterConstants::MSG_CART_EMPTY));
         return;
     }
 
@@ -900,7 +988,7 @@ void RegisterWindow::onDiscountClicked()
     for (const auto& item : m_cart)
         subtotal += item.price * item.quantity;
 
-    DiscountDialog dlg(m_db, subtotal, this);
+    DiscountDialog dlg(m_api, subtotal, this);
     if (dlg.exec() != QDialog::Accepted) return;
 
     // Replace any existing discount — only one allowed
@@ -920,7 +1008,7 @@ void RegisterWindow::onOpenTicketsClicked()
     }
 
     // "Open Tickets" — cart is empty, show dialog
-    OpenTicketsDialog dlg(m_db, this);
+    OpenTicketsDialog dlg(m_api, this);
     if (dlg.exec() != QDialog::Accepted) return;
 
     const int ticketId = dlg.selectedTicketId();
@@ -937,42 +1025,40 @@ void RegisterWindow::onOpenTicketsClicked()
 
 void RegisterWindow::onWithdrawClicked()
 {
-    if (m_session && !AccessControl::canPerformAction(
-            m_session->username(), AccessControl::WithdrawCash, m_db->database())) {
+    if (m_session && !Permissions::can(m_api, m_session->username(), m_session->role(),
+                                       AccessControl::PERMISSION_WITHDRAW_CASH)) {
         AppHelpers::showWarning(this, tr("You do not have permission to withdraw cash."));
         return;
     }
 
-    QInputDialog dlg(this);
-    dlg.setWindowTitle(tr("Withdraw"));
-    dlg.setLabelText(tr("Enter withdrawal amount:"));
-    dlg.setInputMode(QInputDialog::DoubleInput);
-    dlg.setDoubleMinimum(0.01);
-    dlg.setDoubleMaximum(999999.0);
-    dlg.setDoubleDecimals(2);
-    dlg.setOkButtonText(tr("Withdraw"));
-    dlg.setCancelButtonText(tr("Cancel"));
+    ModernDialog dlg(ModernDialog::Look::Card, "cash", ModernDialog::Tone::Amber, tr("Withdraw cash"),
+                     tr("Take money out of the drawer"), 420, this);
+    QLineEdit* amountEdit = ModernDialog::moneyEdit(&dlg, true);
+    dlg.addField(tr("Amount"), amountEdit);
+    QPushButton* withdrawBtn = dlg.addFooter(tr("Withdraw"), "cash", "amber");
+    withdrawBtn->setEnabled(false);
+    connect(amountEdit, &QLineEdit::textChanged, withdrawBtn, [amountEdit, withdrawBtn]() {
+        withdrawBtn->setEnabled(ModernDialog::moneyValue(amountEdit) > 0);
+    });
+    connect(withdrawBtn, &QPushButton::clicked, &dlg, &QDialog::accept);
+    amountEdit->setFocus();
 
     if (dlg.exec() != QDialog::Accepted) return;
 
-    const double amount = dlg.doubleValue();
+    const double amount = ModernDialog::moneyValue(amountEdit);
     if (amount <= 0) return;
 
-    const QString userName = m_session ? m_session->displayName() : tr("Unknown");
+    const QString userName = m_session ? m_session->displayName() : "Unknown";
 
-    QSqlQuery ins(m_db->database());
-    ins.prepare(Queries::ONE_TIME_EXPENSE_INSERT);
-    ins.addBindValue(userName);
-    ins.addBindValue(amount);
-    ins.addBindValue(QDate::currentDate().toString("yyyy-MM-dd"));
-    ins.addBindValue(tr("Withdrawal from Register"));
-
-    if (!ins.exec()) {
-        AppHelpers::showError(this, tr("Failed to record withdrawal.\n\n") + ins.lastError().text());
+    if (!m_api->recordWithdrawal(userName, amount, QDate::currentDate().toString("yyyy-MM-dd"))) {
+        AppHelpers::showError(this, tr("Failed to record withdrawal.\n\n") + m_api->lastError());
         return;
     }
+    // Financial shows withdrawals among the expenses.
+    if (m_notifier)
+        m_notifier->notifyChange(ChangeType::EXPENSE_UPDATED, 0);
 
-    AppHelpers::showInfo(this, QString(tr("Withdrawal of %1 recorded successfully.")).arg(AppHelpers::formatPrice(amount)));
+    AppHelpers::showInfo(this, tr("Withdrawal of %1 recorded successfully.").arg(AppHelpers::formatPrice(amount)));
 }
 
 void RegisterWindow::onCustomItemClicked()
@@ -995,25 +1081,9 @@ void RegisterWindow::onCustomItemClicked()
     updateCartTotal();
 }
 
-void RegisterWindow::updateNotificationBadge()
-{
-    if (!UIMap::notificationBtn) return;
-
-    int count = m_notificationManager ? m_notificationManager->unreadCount() : 0;
-
-    if (count > 0) {
-        UIMap::notificationBtn->setIcon(QIcon(StyleManager::iconPath("notification")));
-        UIMap::notificationBtn->setStyleSheet(
-            "QPushButton { background-color: #4A90E2; border-radius: 18px; }");
-    } else {
-        UIMap::notificationBtn->setIcon(QIcon(StyleManager::iconPath("notification")));
-        UIMap::notificationBtn->setStyleSheet("");
-    }
-}
-
 void RegisterWindow::onLogoutClicked()
 {
-    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId(), m_session->username())) {
+    if (!LogoutManager::confirmAndLogout(this, m_session->sessionId())) {
         return;
     }
     close();
@@ -1022,16 +1092,17 @@ void RegisterWindow::onLogoutClicked()
 
 // ===== EDIT MODE =====
 
-void RegisterWindow::checkPendingEditRequest()
+void RegisterWindow::handleNavigation(const QString& action)
 {
-    int ticketId = TicketEditRequest::read();
-    if (ticketId <= 0) return;
+    NotificationActions::Action parsed = NotificationActions::parse(action);
 
-    // Bring window to front reliably
-    showNormal();
-    raise();
-    activateWindow();
-    QWidget::activateWindow();
+    // Bring window to front reliably (also handles "Register|show" focus requests)
+    AppHelpers::bringToFront(this);
+
+    if (parsed.app.compare("Register", Qt::CaseInsensitive) != 0 || parsed.value <= 0)
+        return;
+
+    const int ticketId = parsed.value;
 
     // Warn if cart is not empty
     if (!m_cart.isEmpty()) {
@@ -1041,38 +1112,41 @@ void RegisterWindow::checkPendingEditRequest()
             return;
     }
 
-    TicketEditRequest::clear();
-    enterEditMode(ticketId);
+    // Route to open-ticket edit mode for OPEN tickets, plain edit otherwise.
+    DataRow meta = m_api->ticket(ticketId);
+    if (!meta.isEmpty() &&
+        QString::compare(meta.value("status").toString(), "OPEN", Qt::CaseInsensitive) == 0) {
+        enterOpenTicketEditMode(ticketId);
+    } else {
+        enterEditMode(ticketId);
+    }
 }
 
 void RegisterWindow::enterEditMode(int ticketId)
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
     clearCart();
 
-    // Load ticket items from DB into cart
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::TICKET_ITEM_SELECT_BY_TICKET);
-    query.addBindValue(ticketId);
-
-    if (!query.exec()) {
-        qWarning() << "enterEditMode: failed to load ticket items:" << query.lastError().text();
+    // Load ticket items into the cart
+    QList<DataRow> rows = m_api->ticketItems(ticketId);
+    if (!m_api->ok()) {
+        qWarning() << "enterEditMode: failed to load ticket items:" << m_api->lastError();
         AppHelpers::showError(this, tr("Failed to load ticket items for editing."));
         return;
     }
 
-    while (query.next()) {
-        int     productId  = query.value("product_id").toInt();
-        int     variantId  = query.value("variant_id").toInt();
-        QString name       = query.value("product_name").toString();
-        QString varName    = query.value("variant_name").toString();
-        int     qty        = query.value("quantity").toInt();
-        double  unitPrice  = query.value("unit_price").toDouble();
-        double  unitCost   = query.value("unit_cost").toDouble();
+    for (const DataRow& row : rows) {
+        int     productId  = row.value("product_id").toInt();
+        int     variantId  = row.value("variant_id").toInt();
+        QString name       = row.value("product_name").toString();
+        QString varName    = row.value("variant_name").toString();
+        int     qty        = row.value("quantity").toInt();
+        double  unitPrice  = row.value("unit_price").toDouble();
+        double  unitCost   = row.value("unit_cost").toDouble();
 
         CartItem item;
-        item.name              = varName.isEmpty() ? name : QString(tr("%1 — %2")).arg(name, varName);
+        item.name              = varName.isEmpty() ? name : QString("%1 — %2").arg(name, varName);
         item.price             = unitPrice;
         item.cost              = unitCost;
         item.quantity          = qty;
@@ -1100,8 +1174,7 @@ void RegisterWindow::enterEditMode(int ticketId)
     updateCartTotal();
 
     // Update UI to reflect edit mode
-    UIMap::confirmBtn->setText(tr("Save Changes"));
-    UIMap::cancelBtn->setText(tr("Cancel Edit"));
+    setCheckoutLabels(tr("Save Changes"), tr("Cancel Edit"));
     setWindowTitle(tr("POSBox - Register  [EDITING TICKET]"));
 
     qDebug() << "Entered edit mode for ticket" << ticketId;
@@ -1121,8 +1194,7 @@ void RegisterWindow::exitEditMode()
 
     clearCart();
 
-    UIMap::confirmBtn->setText(tr("Confirm Sale"));
-    UIMap::cancelBtn->setText(tr("Cancel"));
+    setCheckoutLabels(tr("Confirm"), tr("Cancel"));
     setWindowTitle(tr("POSBox - Register"));
 
     qDebug() << "Exited edit mode";
@@ -1131,28 +1203,7 @@ void RegisterWindow::exitEditMode()
 void RegisterWindow::saveEditedTransaction()
 {
     if (!validateTransaction()) return;
-    if (!m_db || m_editTicketId <= 0) return;
-
-    // ── Snapshot old items for stock diff ────────────────────────────────────
-    QHash<int, int> oldProductQtys;
-    QHash<int, int> oldVariantQtys;
-
-    QSqlQuery oldQuery(m_db->database());
-    oldQuery.prepare(Queries::TICKET_ITEM_SELECT_BY_TICKET);
-    oldQuery.addBindValue(m_editTicketId);
-
-    if (oldQuery.exec()) {
-        while (oldQuery.next()) {
-            int productId = oldQuery.value("product_id").toInt();
-            int variantId = oldQuery.value("variant_id").toInt();
-            int qty       = oldQuery.value("quantity").toInt();
-            if (variantId > 0) {
-                oldVariantQtys[variantId] += qty;
-            } else if (productId > 0) {
-                oldProductQtys[productId] += qty;
-            }
-        }
-    }
+    if (!m_api || m_editTicketId <= 0) return;
 
     // ── Recalculate totals ────────────────────────────────────────────────────
     double subtotal = 0.0;
@@ -1165,69 +1216,40 @@ void RegisterWindow::saveEditedTransaction()
 
     double total = qMax(0.0, subtotal - totalDiscount);
 
-    // ── Update ticket record ──────────────────────────────────────────────────
-    QSqlQuery upd(m_db->database());
-    upd.prepare(Queries::TICKET_UPDATE_STATUS);   // reuse: UPDATE tickets SET status=? WHERE id=?
-    // We need a fuller update — use a raw query for the totals
-    upd.prepare("UPDATE tickets SET subtotal=?, discount_amount=?, total=? WHERE id=?");
-    upd.addBindValue(subtotal);
-    upd.addBindValue(totalDiscount);
-    upd.addBindValue(total);
-    upd.addBindValue(m_editTicketId);
+    // ── One transaction: totals + item replace + stock diffs ───────────────
+    QVariantMap totals;
+    totals["subtotal"] = subtotal;
+    totals["discount_amount"] = totalDiscount;
+    totals["total"] = total;
 
-    if (!upd.exec()) {
-        AppHelpers::showError(this, tr("Failed to update ticket totals.\n\n") + upd.lastError().text());
+    QList<QVariantMap> items;
+    for (const CartItem& item : cartInOrder()) {
+        QVariantMap it;
+        it["product_id"] = item.originalProductId > 0 ? QVariant(item.originalProductId) : QVariant();
+        it["variant_id"] = item.variantId > 0 ? QVariant(item.variantId) : QVariant();
+        it["product_name"] = item.name;
+        it["quantity"] = item.quantity;
+        it["unit_price"] = item.price;
+        it["unit_cost"] = item.cost;
+        it["total_price"] = item.price * item.quantity;
+        it["is_service"] = item.isService;
+        items << it;
+    }
+
+    if (!m_api->editTicket(m_editTicketId, totals, items)) {
+        AppHelpers::showError(this, tr("Failed to update ticket.\n\n") + m_api->lastError());
         return;
     }
 
-    // ── Replace ticket items ──────────────────────────────────────────────────
-    QSqlQuery del(m_db->database());
-    del.prepare(Queries::TICKET_ITEM_DELETE_BY_TICKET);
-    del.addBindValue(m_editTicketId);
-    if (!del.exec()) {
-        AppHelpers::showError(this, tr("Failed to clear old ticket items.\n\n") + del.lastError().text());
-        return;
-    }
-
-    for (const auto& item : m_cart) {
-        QSqlQuery ins(m_db->database());
-        ins.prepare(Queries::TICKET_ITEM_INSERT);
-        ins.addBindValue(m_editTicketId);
-        ins.addBindValue(item.originalProductId > 0 ? item.originalProductId : QVariant());
-        ins.addBindValue(item.variantId > 0 ? item.variantId : QVariant());
-        ins.addBindValue(item.name);
-        ins.addBindValue(QVariant());   // variant_name (already merged into name)
-        ins.addBindValue(QVariant());   // category_name
-        ins.addBindValue(QVariant());   // barcode
-        ins.addBindValue(item.quantity);
-        ins.addBindValue(item.price);
-        ins.addBindValue(item.cost);
-        ins.addBindValue(item.price * item.quantity);
-
-        if (!ins.exec())
-            qWarning() << "saveEditedTransaction: failed to insert item:" << ins.lastError().text();
-    }
-
-    // ── Snapshot new items for stock diff ────────────────────────────────────
-    QHash<int, int> newProductQtys;
-    QHash<int, int> newVariantQtys;
-    for (const auto& item : m_cart) {
-        if (item.variantId > 0 && !item.isService) {
-            newVariantQtys[item.variantId] += item.quantity;
-        } else if (item.originalProductId > 0 && item.variantId <= 0 && !item.isService) {
-            newProductQtys[item.originalProductId] += item.quantity;
-        }
-    }
-
-    // ── Adjust stock based on diff ────────────────────────────────────────────
-    adjustStockDiff(oldProductQtys, newProductQtys);
-    adjustStockDiff(oldVariantQtys, newVariantQtys, true);
-
-    // ── Notify other apps ─────────────────────────────────────────────────────
+    // ── Notify other apps on this machine to refresh ──────────────────────────
     if (m_notifier) {
         m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, 0);
         m_notifier->notifyChange(ChangeType::TICKET_UPDATED, m_editTicketId);
     }
+
+    // Direct refresh: the edit can change today's totals (no loopback wait).
+    updateDailyIncome();
+    m_bell->refreshNow();
 
     AppHelpers::showInfo(this, tr("Ticket updated successfully."));
 
@@ -1235,63 +1257,7 @@ void RegisterWindow::saveEditedTransaction()
     loadProducts();
 }
 
-void RegisterWindow::adjustStockDiff(const QHash<int, int>& oldQtys,
-                                     const QHash<int, int>& newQtys)
-{
-    // Collect all product IDs from both snapshots
-    QSet<int> allIds;
-    for (auto it = oldQtys.begin(); it != oldQtys.end(); ++it) allIds.insert(it.key());
-    for (auto it = newQtys.begin(); it != newQtys.end(); ++it) allIds.insert(it.key());
-
-    for (int productId : allIds) {
-        int oldQty = oldQtys.value(productId, 0);
-        int newQty = newQtys.value(productId, 0);
-        int diff   = newQty - oldQty;  // positive = need to deduct more, negative = restore
-
-        if (diff == 0) continue;
-
-        // Check if product is a service before touching stock
-        QSqlQuery chk(m_db->database());
-        chk.prepare("SELECT is_service FROM products WHERE id = ?");
-        chk.addBindValue(productId);
-        if (!chk.exec() || !chk.next()) continue;
-        if (chk.value("is_service").toBool()) continue;
-
-        QSqlQuery sq(m_db->database());
-        sq.prepare(Queries::PRODUCT_UPDATE_STOCK);
-        sq.addBindValue(-diff);   // negative diff means restore (add back), positive means deduct
-        sq.addBindValue(productId);
-
-        if (!sq.exec())
-            qWarning() << "adjustStockDiff: failed for product" << productId << sq.lastError().text();
-    }
-}
-
-void RegisterWindow::adjustStockDiff(const QHash<int, int>& oldQtys,
-                                     const QHash<int, int>& newQtys,
-                                     bool isVariant)
-{
-    Q_UNUSED(isVariant);
-    QSet<int> allIds;
-    for (auto it = oldQtys.begin(); it != oldQtys.end(); ++it) allIds.insert(it.key());
-    for (auto it = newQtys.begin(); it != newQtys.end(); ++it) allIds.insert(it.key());
-
-    for (int variantId : allIds) {
-        int oldQty = oldQtys.value(variantId, 0);
-        int newQty = newQtys.value(variantId, 0);
-        int diff   = newQty - oldQty;
-
-        if (diff == 0) continue;
-
-        QSqlQuery sq(m_db->database());
-        sq.prepare(Queries::VARIANT_UPDATE_STOCK);
-        sq.addBindValue(-diff);
-        sq.addBindValue(variantId);
-
-        if (!sq.exec())
-            qWarning() << "adjustStockDiff: failed for variant" << variantId << sq.lastError().text();
-    }
-}
+// Stock diffs are applied atomically inside ticket_edit.
 // ===== OPEN TICKET BUTTON STATE =====
 
 void RegisterWindow::updateOpenTicketButton()
@@ -1312,10 +1278,23 @@ void RegisterWindow::updateOpenTicketButton()
 void RegisterWindow::saveAsOpenTicket()
 {
     if (!validateTransaction()) return;
-    if (!m_session || !m_db) return;
+    if (!m_session || !m_api) return;
 
     // If we're editing an existing open ticket, pre-fill the dialog
     SaveTicketDialog dlg(this);
+    {
+        // What the ticket holds, for the side panel.
+        double subtotal = 0.0;
+        for (const auto& item : m_cart)
+            subtotal += item.price * item.quantity;
+        double discount = 0.0;
+        for (const DiscountItem& d : m_discounts)
+            discount += DiscountHandler::calculateAmount(d, subtotal);
+        QList<SaveTicketDialog::Line> lines;
+        for (const auto& item : cartInOrder())
+            lines.append({QString("%1 × %2").arg(item.name).arg(item.quantity), item.price * item.quantity});
+        dlg.setSummary(lines, discount, qMax(0.0, subtotal - discount));
+    }
     if (m_openTicketEditMode) {
         dlg.setCustomerName(m_openTicketCustomerName);
         dlg.setAdvancePayment(m_openTicketAdvance);
@@ -1339,53 +1318,41 @@ void RegisterWindow::saveAsOpenTicket()
 
     const double total = qMax(0.0, subtotal - totalDiscount);
 
+    QList<QVariantMap> items;
+    for (const CartItem& item : cartInOrder()) {
+        QVariantMap it;
+        it["product_id"] = item.originalProductId > 0 ? QVariant(item.originalProductId) : QVariant();
+        it["variant_id"] = item.variantId > 0 ? QVariant(item.variantId) : QVariant();
+        it["product_name"] = item.name;
+        it["quantity"] = item.quantity;
+        it["unit_price"] = item.price;
+        it["unit_cost"] = item.cost;
+        it["total_price"] = item.price * item.quantity;
+        it["is_service"] = item.isService;
+        items << it;
+    }
+
     if (m_openTicketEditMode) {
         // ── Overwrite existing open ticket ───────────────────────────────────
-        QSqlQuery upd(m_db->database());
-        upd.prepare(
-            "UPDATE tickets SET "
-            "subtotal=?, discount_amount=?, total=?, "
-            "customer_name=?, deposit_amount=?, description=? "
-            "WHERE id=?");
-        upd.addBindValue(subtotal);
-        upd.addBindValue(totalDiscount);
-        upd.addBindValue(total);
-        upd.addBindValue(customerName.isEmpty() ? QVariant() : customerName);
-        upd.addBindValue(advance);
-        upd.addBindValue(description.isEmpty() ? QVariant() : description);
-        upd.addBindValue(m_openTicketEditId);
+        QVariantMap header;
+        header["subtotal"] = subtotal;
+        header["discount_amount"] = totalDiscount;
+        header["total"] = total;
+        header["customer_name"] = customerName.isEmpty() ? QVariant() : QVariant(customerName);
+        header["deposit_amount"] = advance;
+        header["description"] = description.isEmpty() ? QVariant() : QVariant(description);
 
-        if (!upd.exec()) {
-            AppHelpers::showError(this, tr("Failed to update ticket.\n\n") + upd.lastError().text());
+        if (!m_api->updateOpenTicket(m_openTicketEditId, header, items)) {
+            AppHelpers::showError(this, tr("Failed to update ticket.\n\n") + m_api->lastError());
             return;
-        }
-
-        // Replace items
-        QSqlQuery del(m_db->database());
-        del.prepare(Queries::TICKET_ITEM_DELETE_BY_TICKET);
-        del.addBindValue(m_openTicketEditId);
-        del.exec();
-
-        for (const auto& item : m_cart) {
-            QSqlQuery ins(m_db->database());
-            ins.prepare(Queries::TICKET_ITEM_INSERT);
-            ins.addBindValue(m_openTicketEditId);
-            ins.addBindValue(item.originalProductId > 0 ? item.originalProductId : QVariant());
-            ins.addBindValue(item.variantId > 0 ? item.variantId : QVariant());
-            ins.addBindValue(item.name);
-            ins.addBindValue(QVariant()); // variant_name
-            ins.addBindValue(QVariant()); // category_name
-            ins.addBindValue(QVariant()); // barcode
-            ins.addBindValue(item.quantity);
-            ins.addBindValue(item.price);
-            ins.addBindValue(item.cost);
-            ins.addBindValue(item.price * item.quantity);
-            if (!ins.exec())
-                qWarning() << "saveAsOpenTicket: failed to insert item:" << ins.lastError().text();
         }
 
         if (m_notifier)
             m_notifier->notifyChange(ChangeType::TICKET_UPDATED, m_openTicketEditId);
+
+        // Direct refresh (no shared-memory loopback wait).
+        updateDailyIncome();
+        m_bell->refreshNow();
 
         AppHelpers::showInfo(this, tr("Open ticket updated successfully."));
 
@@ -1398,56 +1365,38 @@ void RegisterWindow::saveAsOpenTicket()
 
     } else {
         // ── Create new open ticket ────────────────────────────────────────────
-        const QString ticketNumber = AppHelpers::generateTicketNumber();
+        QVariantMap header;
+        header["ticket_number"] = AppHelpers::generateTicketNumber();
+        header["date"] = QDate::currentDate().toString("yyyy-MM-dd");
+        header["time"] = QTime::currentTime().toString("HH:mm:ss");
+        header["seller_username"] = m_session->username();
+        header["seller_display_name"] = m_session->displayName();
+        header["subtotal"] = subtotal;
+        header["discount_amount"] = totalDiscount;
+        header["tax_amount"] = 0.0;
+        header["total"] = total;
+        header["payment_method"] = "CASH";
+        header["status"] = "OPEN";
+        header["customer_name"] = customerName.isEmpty() ? QVariant() : QVariant(customerName);
+        header["deposit_amount"] = advance;
+        header["description"] = description.isEmpty() ? QVariant() : QVariant(description);
 
-        QSqlQuery query(m_db->database());
-        query.prepare(Queries::TICKET_INSERT);
-        query.addBindValue(ticketNumber);
-        query.addBindValue(QDate::currentDate());
-        query.addBindValue(QTime::currentTime());
-        query.addBindValue(m_session->username());
-        query.addBindValue(m_session->displayName());
-        query.addBindValue(subtotal);
-        query.addBindValue(totalDiscount);
-        query.addBindValue(0.0);   // tax_amount
-        query.addBindValue(total);
-        query.addBindValue("CASH");
-        query.addBindValue("OPEN");
-        query.addBindValue(customerName.isEmpty() ? QVariant() : customerName);
-        query.addBindValue(QVariant()); // customer_phone
-        query.addBindValue(advance);
-        query.addBindValue(description.isEmpty() ? QVariant() : description);
-        query.addBindValue(QVariant()); // due_date
+        QString ticketNumber;
+        const int ticketId = m_api->saveOpenTicket(header, items, &ticketNumber);
 
-        if (!query.exec()) {
-            AppHelpers::showError(this, tr("Failed to save ticket.\n\n") + query.lastError().text());
+        if (ticketId <= 0) {
+            AppHelpers::showError(this, tr("Failed to save ticket.\n\n") + m_api->lastError());
             return;
-        }
-
-        const int ticketId = query.lastInsertId().toInt();
-
-        for (const auto& item : m_cart) {
-            QSqlQuery ins(m_db->database());
-            ins.prepare(Queries::TICKET_ITEM_INSERT);
-            ins.addBindValue(ticketId);
-            ins.addBindValue(item.originalProductId > 0 ? item.originalProductId : QVariant());
-            ins.addBindValue(item.variantId > 0 ? item.variantId : QVariant());
-            ins.addBindValue(item.name);
-            ins.addBindValue(QVariant());
-            ins.addBindValue(QVariant());
-            ins.addBindValue(QVariant());
-            ins.addBindValue(item.quantity);
-            ins.addBindValue(item.price);
-            ins.addBindValue(item.cost);
-            ins.addBindValue(item.price * item.quantity);
-            if (!ins.exec())
-                qWarning() << "saveAsOpenTicket: failed to insert item:" << ins.lastError().text();
         }
 
         if (m_notifier)
             m_notifier->notifyChange(ChangeType::TICKET_CREATED, ticketId);
 
-        AppHelpers::showInfo(this, QString(tr("Ticket #%1 saved as open.")).arg(ticketNumber));
+        // Direct refresh (no shared-memory loopback wait).
+        updateDailyIncome();
+        m_bell->refreshNow();
+
+        AppHelpers::showInfo(this, tr("Ticket #%1 saved as open.").arg(ticketNumber));
     }
 
     clearCart();
@@ -1456,49 +1405,36 @@ void RegisterWindow::saveAsOpenTicket()
 
 void RegisterWindow::completeOpenTicket(int ticketId)
 {
-    if (!m_db || ticketId <= 0) return;
+    if (!m_api || ticketId <= 0) return;
 
     // ── Check stock before doing anything ────────────────────────────────────
-    QSqlQuery itemQuery(m_db->database());
-    itemQuery.prepare(Queries::TICKET_ITEM_SELECT_BY_TICKET);
-    itemQuery.addBindValue(ticketId);
-
-    if (!itemQuery.exec()) {
+    QList<DataRow> itemRows = m_api->ticketItems(ticketId);
+    if (!m_api->ok()) {
         AppHelpers::showError(this, tr("Failed to load ticket items."));
         return;
     }
 
     QStringList insufficientItems;
 
-    while (itemQuery.next()) {
-        const int    productId = itemQuery.value("product_id").toInt();
-        const int    variantId = itemQuery.value("variant_id").toInt();
-        const int    qty       = itemQuery.value("quantity").toInt();
-        const QString name     = itemQuery.value("product_name").toString();
+    for (const DataRow& row : itemRows) {
+        const int    productId = row.value("product_id").toInt();
+        const int    variantId = row.value("variant_id").toInt();
+        const int    qty       = row.value("quantity").toInt();
+        const QString name     = row.value("product_name").toString();
 
         if (variantId > 0) {
             // Join with parent product to check is_service before checking stock
-            QSqlQuery chk(m_db->database());
-            chk.prepare(
-                "SELECT pv.stock, p.is_service "
-                "FROM product_variants pv "
-                "JOIN products p ON pv.parent_product_id = p.id "
-                "WHERE pv.id = ?");
-            chk.addBindValue(variantId);
-            if (chk.exec() && chk.next()) {
-                if (!chk.value("is_service").toBool() &&
-                    chk.value("stock").toInt() < qty)
-                    insufficientItems << QString(tr("- %1 (need %2)")).arg(name).arg(qty);
-            }
+            QJsonObject chk = m_api->stockCheckVariant(variantId);
+            if (!m_api->ok()) continue;
+            if (!chk.value("is_service").toBool() &&
+                chk.value("stock").toInt() < qty)
+                insufficientItems << tr("- %1 (need %2)").arg(name).arg(qty);
         } else if (productId > 0) {
-            QSqlQuery chk(m_db->database());
-            chk.prepare("SELECT is_service, stock_quantity FROM products WHERE id = ?");
-            chk.addBindValue(productId);
-            if (chk.exec() && chk.next()) {
-                if (!chk.value("is_service").toBool() &&
-                    chk.value("stock_quantity").toInt() < qty)
-                    insufficientItems << QString(tr("- %1 (need %2)")).arg(name).arg(qty);
-            }
+            QJsonObject chk = m_api->stockCheckProduct(productId);
+            if (!m_api->ok()) continue;
+            if (!chk.value("is_service").toBool() &&
+                chk.value("stock_quantity").toInt() < qty)
+                insufficientItems << tr("- %1 (need %2)").arg(name).arg(qty);
         }
     }
 
@@ -1510,76 +1446,31 @@ void RegisterWindow::completeOpenTicket(int ticketId)
         return;
     }
 
-    // ── All stock OK — mark as completed and deduct ───────────────────────────
-    QSqlQuery upd(m_db->database());
-    upd.prepare(Queries::TICKET_UPDATE_STATUS);
-    upd.addBindValue("COMPLETED");
-    upd.addBindValue(QDate::currentDate().toString("yyyy-MM-dd"));
-    upd.addBindValue(ticketId);
-
-    if (!upd.exec()) {
-        AppHelpers::showError(this, tr("Failed to complete ticket.\n\n") + upd.lastError().text());
+    // ── All stock OK — mark as completed and deduct (one atomic call) ────────
+    if (!m_api->completeOpenTicket(ticketId)) {
+        AppHelpers::showError(this, tr("Failed to complete ticket.\n\n") + m_api->lastError());
         return;
     }
-
-    deductStockForTicket(ticketId);
 
     if (m_notifier) {
         m_notifier->notifyChange(ChangeType::PRODUCT_CHANGED, 0);
         m_notifier->notifyChange(ChangeType::TICKET_UPDATED, ticketId);
     }
 
+    // Direct refresh: completing the open ticket adds today's income
+    // (no shared-memory loopback wait).
+    updateDailyIncome();
+    m_bell->refreshNow();
+
     showTicketCompletedDialog(ticketId);
     loadProducts();
 }
 
-void RegisterWindow::deductStockForTicket(int ticketId)
-{
-    if (!m_db || ticketId <= 0) return;
-
-    QSqlQuery query(m_db->database());
-    query.prepare(Queries::TICKET_ITEM_SELECT_BY_TICKET);
-    query.addBindValue(ticketId);
-
-    if (!query.exec()) {
-        qWarning() << "deductStockForTicket: failed to load items:" << query.lastError().text();
-        return;
-    }
-
-    while (query.next()) {
-        const int    productId = query.value("product_id").toInt();
-        const int    variantId = query.value("variant_id").toInt();
-        const int    qty       = query.value("quantity").toInt();
-
-        if (variantId > 0) {
-            QSqlQuery sq(m_db->database());
-            sq.prepare(Queries::VARIANT_UPDATE_STOCK);
-            sq.addBindValue(-qty);
-            sq.addBindValue(variantId);
-            if (!sq.exec())
-                qWarning() << "deductStockForTicket: variant stock failed:" << sq.lastError().text();
-            updateVariantOutOfStock(variantId);
-        } else if (productId > 0) {
-            // Skip services
-            QSqlQuery chk(m_db->database());
-            chk.prepare("SELECT is_service FROM products WHERE id = ?");
-            chk.addBindValue(productId);
-            if (chk.exec() && chk.next() && chk.value(0).toBool()) continue;
-
-            QSqlQuery sq(m_db->database());
-            sq.prepare(Queries::PRODUCT_UPDATE_STOCK);
-            sq.addBindValue(-qty);
-            sq.addBindValue(productId);
-            if (!sq.exec())
-                qWarning() << "deductStockForTicket: product stock failed:" << sq.lastError().text();
-            updateProductOutOfStock(productId, false);
-        }
-    }
-}
-
+// Stock deduction for completed open tickets runs atomically inside the
+// ticket_open_complete transaction — no separate deduct pass exists.
 void RegisterWindow::enterOpenTicketEditMode(int ticketId)
 {
-    if (!m_db || ticketId <= 0) return;
+    if (!m_api || ticketId <= 0) return;
 
     if (!m_cart.isEmpty()) {
         if (!AppHelpers::confirmAction(this,
@@ -1589,11 +1480,8 @@ void RegisterWindow::enterOpenTicketEditMode(int ticketId)
     }
 
     // Load ticket metadata
-    QSqlQuery meta(m_db->database());
-    meta.prepare(Queries::TICKET_SELECT_BY_ID);
-    meta.addBindValue(ticketId);
-
-    if (!meta.exec() || !meta.next()) {
+    DataRow meta = m_api->ticket(ticketId);
+    if (meta.isEmpty()) {
         AppHelpers::showError(this, tr("Failed to load ticket details."));
         return;
     }
@@ -1612,8 +1500,7 @@ void RegisterWindow::enterOpenTicketEditMode(int ticketId)
     m_openTicketEditId   = ticketId;
 
     // Update UI
-    UIMap::confirmBtn->setText(tr("Confirm Sale"));
-    UIMap::cancelBtn->setText(tr("Cancel"));
+    setCheckoutLabels(tr("Confirm"), tr("Cancel"));
     setWindowTitle(tr("POSBox - Register  [EDITING OPEN TICKET]"));
     updateOpenTicketButton();
 }
@@ -1622,177 +1509,29 @@ void RegisterWindow::enterOpenTicketEditMode(int ticketId)
 
 void RegisterWindow::showTicketCompletedDialog(int ticketId)
 {
-    QMessageBox msgBox(this);
-    msgBox.setWindowTitle(tr("Ticket Completed"));
-    msgBox.setText(tr("Ticket completed and stock updated."));
-    msgBox.setInformativeText(tr("Would you like to print this ticket?"));
+    const DataRow ticket = m_api->ticket(ticketId);
+    const QString number = ticket.value("ticket_number").toString();
+    MessageDialog dialog(MessageDialog::Kind::Success, tr("Sale completed"),
+                         number.isEmpty() ? tr("Stock updated") : tr("Ticket #%1").arg(number), this);
+    if (!ticket.isEmpty())
+        dialog.setAmount(AppHelpers::formatPrice(ticket.value("total").toDouble()));
+    dialog.setButtons(tr("Print Ticket"), tr("Close"), "printer");
 
-    QPushButton* printBtn = new QPushButton(tr("Print Ticket"), &msgBox);
-    QPushButton* closeBtn = new QPushButton(tr("Close"), &msgBox);
-    printBtn->setObjectName("btnStyle-add");
-    closeBtn->setObjectName("btnStyle-delete");
-
-    msgBox.addButton(closeBtn, QMessageBox::RejectRole);
-    msgBox.addButton(printBtn, QMessageBox::AcceptRole);
-    msgBox.setDefaultButton(printBtn);
-
-    printBtn->style()->unpolish(printBtn);
-    printBtn->style()->polish(printBtn);
-    closeBtn->style()->unpolish(closeBtn);
-    closeBtn->style()->polish(closeBtn);
-
-    msgBox.exec();
-
-    if (msgBox.clickedButton() == printBtn) {
+    if (dialog.exec() == QDialog::Accepted)
         printTicket(ticketId);
-    }
 }
 
 void RegisterWindow::printTicket(int ticketId)
 {
-    if (!m_db || ticketId <= 0) return;
+    if (!m_api || ticketId <= 0) return;
 
-    // Fetch shop info
-    ThermalPrinter::ShopInfo shop;
-    {
-        QSqlQuery q(m_db->database());
-        q.prepare(Queries::PROFILE_SELECT);
-        if (q.exec() && q.next()) {
-            shop.name     = q.value("shop_name").toString();
-            shop.phone    = q.value("phone").toString();
-            shop.email    = q.value("email").toString();
-            shop.logoPath = q.value("logo_path").toString();
-        }
-    }
+    const ThermalPrinter::TicketData data = Receipt::loadTicket(m_api, m_images, ticketId);
 
-    // Fetch ticket totals
-    double subtotal       = 0.0;
-    double discountAmount = 0.0;
-    double total          = 0.0;
-    QString status;
-    {
-        QSqlQuery q(m_db->database());
-        q.prepare(Queries::TICKET_SELECT_BY_ID);
-        q.addBindValue(ticketId);
-        if (q.exec() && q.next()) {
-            subtotal        = q.value("subtotal").toDouble();
-            discountAmount = q.value("discount_amount").toDouble();
-            total         = q.value("total").toDouble();
-            status        = q.value("status").toString();
-        }
-    }
-
-    // Fetch ticket items
-    QList<ThermalPrinter::TicketItem> items;
-    {
-        QSqlQuery q(m_db->database());
-        q.prepare(Queries::TICKET_ITEM_SELECT_BY_TICKET);
-        q.addBindValue(ticketId);
-        if (q.exec()) {
-            while (q.next()) {
-                ThermalPrinter::TicketItem item;
-                const QString name = q.value("product_name").toString();
-                const QString variant = q.value("variant_name").toString();
-                item.name       = variant.isEmpty() ? name : QString(tr("%1 - %2")).arg(name, variant);
-                item.quantity   = q.value("quantity").toInt();
-                item.unitPrice  = q.value("unit_price").toDouble();
-                items << item;
-            }
-        }
-    }
-
-    ThermalPrinter::TicketData data;
-    data.shop           = shop;
-    data.items          = items;
-    data.subtotal       = subtotal;
-    data.discountAmount = discountAmount;
-    data.total          = total;
-    data.isUnpaid       = (status == "OPEN");
-
-    ThermalPrinter printer(m_db->database());
+    ThermalPrinter printer(LocalSettings::load().printer);
     if (!printer.print(data)) {
         AppHelpers::showError(this, tr("Failed to print ticket.\n\n") + printer.lastError());
     }
 }
 
-// ===== OUT OF STOCK TRACKING =====
-
-void RegisterWindow::updateProductOutOfStock(int productId, bool hasVariants)
-{
-    if (!m_db || productId <= 0) return;
-
-    if (hasVariants) {
-        QSqlQuery check(m_db->database());
-        check.prepare(Queries::VARIANT_SELECT_BY_PRODUCT);
-        check.addBindValue(productId);
-        if (!check.exec()) return;
-
-        bool allOutOfStock = true;
-        while (check.next()) {
-            if (check.value("stock").toInt() > 0) {
-                allOutOfStock = false;
-                break;
-            }
-        }
-
-        QSqlQuery update(m_db->database());
-        if (allOutOfStock) {
-            update.prepare(Queries::OUT_OF_STOCK_SET);
-            update.addBindValue(productId);
-            update.exec();
-        } else {
-            update.prepare(Queries::OUT_OF_STOCK_CLEAR);
-            update.addBindValue(productId);
-            update.exec();
-        }
-    } else {
-        QSqlQuery check(m_db->database());
-        check.prepare("SELECT stock_quantity FROM products WHERE id = ?");
-        check.addBindValue(productId);
-        if (check.exec() && check.next()) {
-            int stock = check.value("stock_quantity").toInt();
-            QSqlQuery update(m_db->database());
-            if (stock <= 0) {
-                update.prepare(Queries::OUT_OF_STOCK_SET);
-                update.addBindValue(productId);
-            } else {
-                update.prepare(Queries::OUT_OF_STOCK_CLEAR);
-                update.addBindValue(productId);
-            }
-            update.exec();
-        }
-    }
-}
-
-void RegisterWindow::updateVariantOutOfStock(int variantId)
-{
-    if (!m_db || variantId <= 0) return;
-
-    QSqlQuery check(m_db->database());
-    check.prepare("SELECT parent_product_id, stock FROM product_variants WHERE id = ?");
-    check.addBindValue(variantId);
-    if (!check.exec() || !check.next()) return;
-
-    int parentId = check.value("parent_product_id").toInt();
-    int stock = check.value("stock").toInt();
-
-    QSqlQuery parentCheck(m_db->database());
-    parentCheck.prepare("SELECT has_variants FROM products WHERE id = ?");
-    parentCheck.addBindValue(parentId);
-    if (!parentCheck.exec() || !parentCheck.next()) return;
-
-    bool hasVariants = parentCheck.value("has_variants").toBool();
-    if (hasVariants) {
-        updateProductOutOfStock(parentId, true);
-    } else {
-        QSqlQuery update(m_db->database());
-        if (stock <= 0) {
-            update.prepare(Queries::OUT_OF_STOCK_VARIANT_SET);
-            update.addBindValue(variantId);
-        } else {
-            update.prepare(Queries::OUT_OF_STOCK_VARIANT_CLEAR);
-            update.addBindValue(variantId);
-        }
-        update.exec();
-    }
-}
+// Out-of-stock flags are maintained atomically inside every
+// stock movement — no client-side tracking remains.

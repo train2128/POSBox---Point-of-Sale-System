@@ -1,16 +1,17 @@
 #ifndef CUSTOMITEMDIALOG_H
 #define CUSTOMITEMDIALOG_H
 
-#include <QDialog>
+#include "ModernDialog.h"
 #include <QString>
 
+class QLabel;
 class QLineEdit;
 
 /**
  * Dialog for adding a custom (non-inventory) item to the cart.
  * Collects name, cost, and price from the user.
  */
-class CustomItemDialog : public QDialog
+class CustomItemDialog : public ModernDialog
 {
     Q_OBJECT
 
@@ -24,6 +25,7 @@ public:
 
 private slots:
     void onOkClicked();
+    void updateProfit();
 
 private:
     void setupUI();
@@ -31,6 +33,7 @@ private:
     QLineEdit* m_nameEdit;
     QLineEdit* m_costEdit;
     QLineEdit* m_priceEdit;
+    QLabel*    m_profitValue;
 };
 
 #endif // CUSTOMITEMDIALOG_H

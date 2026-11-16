@@ -1,22 +1,22 @@
 #ifndef USERDIALOG_H
 #define USERDIALOG_H
 
-#include <QDialog>
+#include "ModernDialog.h"
 
-class DatabaseManager;
+class LocalApi;
 class QLineEdit;
 class QComboBox;
 class QCheckBox;
 class QLabel;
 
-class UserDialog : public QDialog
+class UserDialog : public ModernDialog
 {
     Q_OBJECT
 
 public:
     enum class Mode { Add, Edit };
 
-    explicit UserDialog(DatabaseManager* db, Mode mode,
+    explicit UserDialog(LocalApi* api, Mode mode,
                         const QString& username = QString(),
                         QWidget* parent = nullptr);
     ~UserDialog() = default;
@@ -24,7 +24,7 @@ public:
 private slots:
     void onShowPasswordToggled(bool checked);
     void onSaveClicked();
-    void onCancelClicked();
+    void updatePasswordMatch();
 
 private:
     void setupUI();
@@ -32,7 +32,7 @@ private:
     bool validate();
     bool saveUser();
 
-    DatabaseManager* m_db;
+    LocalApi* m_api;
     Mode             m_mode;
     QString          m_username; // pre-set in edit mode
 
@@ -43,6 +43,7 @@ private:
     QLineEdit* m_passwordField;
     QLineEdit* m_confirmPasswordField;
     QCheckBox* m_showPasswordCheck;
+    QLabel*    m_matchLabel;
 };
 
 #endif // USERDIALOG_H

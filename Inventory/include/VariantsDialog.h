@@ -1,18 +1,21 @@
 #ifndef VARIANTSDIALOG_H
 #define VARIANTSDIALOG_H
 
-#include <QDialog>
+#include "ModernDialog.h"
 #include <QList>
 
-class DatabaseManager;
-class QHBoxLayout;
+class QFrame;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QScrollArea;
+class QVBoxLayout;
+class LocalApi;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QWidget;
 
-namespace Ui {
-class VarDialog;
-}
 
 /**
  * In-memory variant data — passed in and returned by VariantsDialog.
@@ -31,82 +34,99 @@ struct PendingVariant {
 };
 
 /**
- * Internal row widget references — only used inside VariantsDialog.
- */
-struct VariantRow {
-    int          variantId;
-    QLabel*      nameLabel;
-    QLineEdit*   nameEdit;
-    QLabel*      costLabel;
-    QLineEdit*   costEdit;
-    QLabel*      priceLabel;
-    QLineEdit*   priceEdit;
-    QLabel*      stockLabel;
-    QLineEdit*   stockEdit;
-    QPushButton* deleteBtn;
-    QHBoxLayout* layout;
-
-    VariantRow() : variantId(-1), nameLabel(nullptr), nameEdit(nullptr),
-        costLabel(nullptr), costEdit(nullptr), priceLabel(nullptr),
-        priceEdit(nullptr), stockLabel(nullptr), stockEdit(nullptr),
-        deleteBtn(nullptr), layout(nullptr) {}
-};
-
-/**
- * Variants management dialog.
+ * Variants management dialog — list + detail editor (proposal 3).
+ *
+ * Left card  : clickable variant rows (name + price), "+ Add variant" pill.
+ * Right card : detail editor for the selected variant (name, cost/price,
+ *              live margin chip, stock, "Delete variant" pill).
  *
  * Does NOT touch the database directly — all saving is deferred to ProductDialog.
  *
  * Usage:
- *   VariantsDialog dlg(m_db, m_pendingVariants, productId, this);
+ *   VariantsDialog dlg(m_api, m_pendingVariants, productId, isService, name, this);
  *   if (dlg.exec() == QDialog::Accepted)
  *       m_pendingVariants = dlg.getPendingVariants();
  */
-class VariantsDialog : public QDialog
+class VariantsDialog : public ModernDialog
 {
     Q_OBJECT
 
 public:
     /**
-     * @param db              DatabaseManager (used only in edit mode to load existing variants)
-     * @param pending         Existing pending variants to pre-populate the dialog
-     * @param productId       > 0 in edit mode (loads from DB if pending is empty), -1 in add mode
-     * @param isService      Whether parent product is a service (disables stock field)
+     * @param api          LocalApi (used only in edit mode to load existing variants)
+     * @param pending      Existing pending variants to pre-populate the dialog
+     * @param productId    > 0 in edit mode (loads from the database if pending is empty), -1 in add mode
+     * @param isService    Whether parent product is a service (hides the stock field)
+     * @param productName  Parent product name, shown in the subtitle
      * @param parent
      */
-    explicit VariantsDialog(DatabaseManager* db,
+    explicit VariantsDialog(LocalApi* api,
                             const QList<PendingVariant>& pending,
                             int productId,
                             bool isService,
+                            const QString& productName,
                             QWidget* parent = nullptr);
-    ~VariantsDialog();
 
     /** Returns the validated variant list after the dialog is accepted. */
     QList<PendingVariant> getPendingVariants() const { return m_pendingVariants; }
 
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+
 private slots:
-    void onAddVariantRow();
-    void onDeleteVariantRow();
+    void onAddVariant();
+    void onDeleteVariant();
     void onAccepted();
-    void onRejected();
+    void onDetailEdited();
 
 private:
+    /** One row of the variant list — raw texts are the source of truth. */
+    struct VariantRow {
+        int          variantId = -1;
+        QString      nameText;
+        QString      costText;
+        QString      priceText;
+        QString      stockText;
+        QFrame*      container  = nullptr;
+        QWidget*     header     = nullptr;
+        QLabel*      nameLabel  = nullptr;
+        QLabel*      priceLabel = nullptr;
+        QLabel*      stockLabel = nullptr;
+    };
+
     void setupUI();
     void setupConnections();
-    void registerStaticRow();
     void loadExistingVariants();
     void populateFromPending(const QList<PendingVariant>& pending);
-    void addVariantRow(int variantId = -1, const QString& name = QString(),
-                       double cost = 0.0, double price = 0.0, int stock = 0);
-    void removeVariantRow(int index);
-    void styleDeleteButton(QPushButton* btn, bool enabled);
+    void appendRow(const VariantRow& row);
+    void removeRowAt(int index);
+    void selectRow(int index);
+    void clearDetail();
+    void refreshDetailChip();
+    void updateSubtitle();
+    void updateRowLabels(VariantRow& row);
+    void updateListHeight();
+    QWidget* buildEditor();
     bool validateAndCollect();
 
-    Ui::VarDialog*        ui;
-    DatabaseManager*      m_db;
+    QScrollArea* m_scroll = nullptr;
+    QWidget*     m_listWidget = nullptr;
+    QVBoxLayout* m_listLayout = nullptr;
+    QWidget*     m_editor = nullptr;
+    QLineEdit*   m_nameEdit = nullptr;
+    QLineEdit*   m_costEdit = nullptr;
+    QLineEdit*   m_priceEdit = nullptr;
+    QLineEdit*   m_stockEdit = nullptr;
+    QWidget*     m_stockColumn = nullptr;
+    QLabel*      m_marginValue = nullptr;
+    QPushButton* m_deleteBtn = nullptr;
+    LocalApi*            m_api;
     int                   m_productId;
-    bool                m_isService;
+    bool                  m_isService;
+    QString               m_productName;
     QList<VariantRow>     m_rows;
+    int                   m_selected = -1;
     QList<PendingVariant> m_pendingVariants;
 };
 

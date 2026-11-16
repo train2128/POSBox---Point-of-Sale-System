@@ -1,101 +1,82 @@
 #include "OpenTicketsDialog.h"
-#include "DatabaseManager.h"
-#include "QueryRepository.h"
+#include "LocalApi.h"
+#include "LineIcons.h"
 #include "Prefixes.h"
-#include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QLabel>
-#include <QTableWidget>
-#include <QTableWidgetItem>
 #include <QHeaderView>
 #include <QPushButton>
-#include <QSqlQuery>
-#include <QSqlError>
+#include <QTableWidget>
+#include <QTableWidgetItem>
+#include <QVBoxLayout>
 #include <QDebug>
 
 // Column indices
 static const int COL_DATE    = 0;
 static const int COL_NAME    = 1;
-static const int COL_TOTAL   = 2;
-static const int COL_ADVANCE = 3;
-static const int COL_DESC    = 4;
-static const int COL_COUNT   = 5;
+static const int COL_DESC    = 2;
+static const int COL_TOTAL   = 3;
+static const int COL_ADVANCE = 4;
+static const int COL_LEFT    = 5;
+static const int COL_COUNT   = 6;
 
-OpenTicketsDialog::OpenTicketsDialog(DatabaseManager* db, QWidget* parent)
-    : QDialog(parent)
-    , m_db(db)
+OpenTicketsDialog::OpenTicketsDialog(LocalApi* api, QWidget* parent)
+    : ModernDialog(Look::Card, "receipt", Tone::Accent, tr("Open tickets"), QString(), 780, parent)
+    , m_api(api)
     , m_table(nullptr)
     , m_completeBtn(nullptr)
     , m_editBtn(nullptr)
     , m_deleteBtn(nullptr)
+    , m_printBtn(nullptr)
     , m_action(Action::None)
     , m_selectedTicketId(-1)
 {
-    setWindowTitle(tr("Open Tickets"));
-    setModal(true);
-    setMinimumSize(700, 400);
     setupUI();
     loadTickets();
 }
 
 void OpenTicketsDialog::setupUI()
 {
-    QVBoxLayout* main = new QVBoxLayout(this);
-    main->setContentsMargins(16, 16, 16, 16);
-    main->setSpacing(12);
-
-    QLabel* title = new QLabel(tr("Open Tickets"), this);
-    title->setAlignment(Qt::AlignCenter);
-    main->addWidget(title);
-
     m_table = new QTableWidget(0, COL_COUNT, this);
-    m_table->setHorizontalHeaderLabels({
-        tr("Date"), tr("Customer"), tr("Total"), tr("Advance"), tr("Description")
-    });
+    m_table->setObjectName("openTicketsTable");
+    m_table->setHorizontalHeaderLabels({ tr("DATE"), tr("CUSTOMER"), tr("DESCRIPTION"), tr("TOTAL"), tr("ADVANCE"), tr("LEFT")});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setAlternatingRowColors(true);
-    m_table->verticalHeader()->setVisible(false);
-    m_table->horizontalHeader()->setStretchLastSection(true);
-    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(COL_DESC, QHeaderView::Stretch);
+    m_table->setFocusPolicy(Qt::NoFocus);
     m_table->setShowGrid(false);
-    main->addWidget(m_table);
+    m_table->verticalHeader()->setVisible(false);
+    m_table->verticalHeader()->setDefaultSectionSize(44);
+    QHeaderView* header = m_table->horizontalHeader();
+    header->setHighlightSections(false);
+    header->setSectionResizeMode(QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(COL_DESC, QHeaderView::Stretch);
+    header->setMinimumSectionSize(84);
+    for (int column : {COL_TOTAL, COL_ADVANCE, COL_LEFT})
+        m_table->model()->setHeaderData(column, Qt::Horizontal,
+                                        int(Qt::AlignRight | Qt::AlignVCenter), Qt::TextAlignmentRole);
+    for (int column : {COL_DATE, COL_NAME, COL_DESC})
+        m_table->model()->setHeaderData(column, Qt::Horizontal,
+                                        int(Qt::AlignLeft | Qt::AlignVCenter), Qt::TextAlignmentRole);
+    m_table->setFixedHeight(280);
+    body()->addWidget(m_table);
 
-    QHBoxLayout* btnRow = new QHBoxLayout();
-    btnRow->setSpacing(8);
+    QHBoxLayout* btnRow = addCustomFooter();
 
-    m_completeBtn = new QPushButton(tr("Complete"), this);
-    m_completeBtn->setProperty("btnStyle", "add");
-    m_completeBtn->style()->unpolish(m_completeBtn);
-    m_completeBtn->style()->polish(m_completeBtn);
+    QPushButton* closeBtn = quietButton(tr("Close"));
+    m_deleteBtn = mainButton(tr("Delete"), "trash", "outlineDanger");
+    m_deleteBtn->setIcon(LineIcons::icon("trash", toneColor(Tone::Red), 16));
+    m_deleteBtn->setAutoDefault(false);
+    m_printBtn = quietButton(tr("Print"), "printer");
+    m_editBtn = quietButton(tr("Edit"), "edit");
+    m_completeBtn = mainButton(tr("Complete"), "check", "add");
+    m_completeBtn->setAutoDefault(false);
 
-    m_editBtn = new QPushButton(tr("Edit"), this);
-    m_editBtn->setProperty("btnStyle", "edit");
-    m_editBtn->style()->unpolish(m_editBtn);
-    m_editBtn->style()->polish(m_editBtn);
-
-    m_deleteBtn = new QPushButton(tr("Delete"), this);
-    m_deleteBtn->setProperty("btnStyle", "delete");
-    m_deleteBtn->style()->unpolish(m_deleteBtn);
-    m_deleteBtn->style()->polish(m_deleteBtn);
-
-    m_printBtn = new QPushButton(tr("Print"), this);
-    m_printBtn->setProperty("btnStyle", "add");
-    m_printBtn->style()->unpolish(m_printBtn);
-    m_printBtn->style()->polish(m_printBtn);
-
-    QPushButton* closeBtn = new QPushButton(tr("Close"), this);
-
-    btnRow->addWidget(m_completeBtn);
-    btnRow->addWidget(m_editBtn);
+    btnRow->addWidget(closeBtn);
+    btnRow->addStretch();
     btnRow->addWidget(m_deleteBtn);
     btnRow->addWidget(m_printBtn);
-    btnRow->addStretch();
-    btnRow->addWidget(closeBtn);
-
-    main->addLayout(btnRow);
+    btnRow->addWidget(m_editBtn);
+    btnRow->addWidget(m_completeBtn);
 
     setButtonsEnabled(false);
 
@@ -115,47 +96,63 @@ void OpenTicketsDialog::setupUI()
 
 void OpenTicketsDialog::loadTickets()
 {
-    if (!m_db) return;
+    if (!m_api) return;
 
+    m_table->clearSpans();
     m_table->setRowCount(0);
 
-    // Local query includes description (TICKET_SELECT_OPEN omits it)
-    QSqlQuery query(m_db->database());
-    query.prepare(
-        "SELECT id, date, customer_name, total, deposit_amount, description "
-        "FROM tickets WHERE status = 'OPEN' ORDER BY date DESC");
-
-    if (!query.exec()) {
+    // Open tickets, ordered by due date.
+    const QList<DataRow> rows = m_api->openTickets();
+    if (!m_api->ok()) {
         qWarning() << "OpenTicketsDialog: failed to load open tickets:"
-                   << query.lastError().text();
+                   << m_api->lastError();
         return;
     }
 
-    while (query.next()) {
-        const int     ticketId = query.value("id").toInt();
-        const QString date     = query.value("date").toString();
-        const QString custName = query.value("customer_name").toString();
-        const double  total    = query.value("total").toDouble();
-        const double  advance  = query.value("deposit_amount").toDouble();
-        const QString desc     = query.value("description").toString();
+    double allTotals = 0.0;
+    double allLeft = 0.0;
+    for (const DataRow& r : rows) {
+        const int     ticketId = r.value("id").toInt();
+        const QString date     = r.value("date").toString();
+        const QString custName = r.value("customer_name").toString();
+        const double  total    = r.value("total").toDouble();
+        const double  advance  = r.value("deposit_amount").toDouble();
+        const QString desc     = r.value("description").toString();
+        const double  left     = qMax(0.0, total - advance);
+        allTotals += total;
+        allLeft += left;
 
         const int row = m_table->rowCount();
         m_table->insertRow(row);
 
-        auto makeItem = [&](const QString& text) {
+        auto makeItem = [&](const QString& text, bool number = false) {
             QTableWidgetItem* item = new QTableWidgetItem(text);
-            item->setTextAlignment(Qt::AlignCenter);
+            item->setTextAlignment((number ? Qt::AlignRight : Qt::AlignLeft) | Qt::AlignVCenter);
             item->setData(Qt::UserRole, ticketId);
             return item;
         };
 
         m_table->setItem(row, COL_DATE,    makeItem(AppHelpers::formatDate(
                                             QDate::fromString(date, "yyyy-MM-dd"))));
-        m_table->setItem(row, COL_NAME,    makeItem(custName.isEmpty() ? "-" : custName));
-        m_table->setItem(row, COL_TOTAL,   makeItem(AppHelpers::formatPrice(total)));
-        m_table->setItem(row, COL_ADVANCE, makeItem(AppHelpers::formatPrice(advance)));
+        auto* nameItem = makeItem(custName.isEmpty() ? "-" : custName);
+        QFont nameFont = m_table->font();
+        nameFont.setBold(true);
+        nameItem->setFont(nameFont);
+        m_table->setItem(row, COL_NAME,    nameItem);
         m_table->setItem(row, COL_DESC,    makeItem(desc.isEmpty() ? "-" : desc));
+        m_table->setItem(row, COL_TOTAL,   makeItem(AppHelpers::formatAmount(total), true));
+        m_table->setItem(row, COL_ADVANCE, makeItem(AppHelpers::formatAmount(advance), true));
+        auto* leftItem = makeItem(AppHelpers::formatAmount(left), true);
+        leftItem->setForeground(toneColor(Tone::Amber));
+        leftItem->setFont(nameFont);
+        m_table->setItem(row, COL_LEFT,    leftItem);
     }
+
+    setSubtitle(rows.isEmpty()
+                    ? tr("Nothing saved")
+                    : tr("%1 saved  ·  %2 total, %3 still to pay")
+                          .arg(rows.size())
+                          .arg(AppHelpers::formatPrice(allTotals), AppHelpers::formatAmount(allLeft)));
 
     if (m_table->rowCount() == 0) {
         m_table->insertRow(0);
@@ -172,6 +169,7 @@ void OpenTicketsDialog::setButtonsEnabled(bool enabled)
     m_completeBtn->setEnabled(enabled);
     m_editBtn->setEnabled(enabled);
     m_deleteBtn->setEnabled(enabled);
+    m_printBtn->setEnabled(enabled);
 }
 
 int OpenTicketsDialog::currentTicketId() const
@@ -217,17 +215,8 @@ void OpenTicketsDialog::onDeleteClicked()
     if (!AppHelpers::confirmAction(this,
                                    tr("Delete this open ticket? This cannot be undone."))) return;
 
-    QSqlQuery del(m_db->database());
-    del.prepare(Queries::TICKET_ITEM_DELETE_BY_TICKET);
-    del.addBindValue(id);
-    del.exec();
-
-    QSqlQuery del2(m_db->database());
-    del2.prepare(Queries::TICKET_DELETE);
-    del2.addBindValue(id);
-
-    if (!del2.exec()) {
-        AppHelpers::showError(this, tr("Failed to delete ticket.\n\n") + del2.lastError().text());
+    if (!m_api->deleteTicket(id)) {
+        AppHelpers::showError(this, tr("Failed to delete ticket.\n\n") + m_api->lastError());
         return;
     }
 

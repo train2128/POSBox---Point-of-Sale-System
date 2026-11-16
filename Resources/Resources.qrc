@@ -1,53 +1,62 @@
 <RCC>
+    <qresource prefix="/translations">
+        <file alias="posbox_fr.qm">translations/posbox_fr.qm</file>
+        <file alias="posbox_es.qm">translations/posbox_es.qm</file>
+        <file alias="posbox_pt.qm">translations/posbox_pt.qm</file>
+        <file alias="posbox_de.qm">translations/posbox_de.qm</file>
+        <file alias="posbox_it.qm">translations/posbox_it.qm</file>
+        <file alias="posbox_tr.qm">translations/posbox_tr.qm</file>
+        <file alias="posbox_ru.qm">translations/posbox_ru.qm</file>
+        <file alias="posbox_ar.qm">translations/posbox_ar.qm</file>
+        <file alias="posbox_zh.qm">translations/posbox_zh.qm</file>
+        <file alias="qtbase_fr.qm">translations/qt/qtbase_fr.qm</file>
+        <file alias="qtbase_es.qm">translations/qt/qtbase_es.qm</file>
+        <file alias="qtbase_pt_BR.qm">translations/qt/qtbase_pt_BR.qm</file>
+        <file alias="qtbase_de.qm">translations/qt/qtbase_de.qm</file>
+        <file alias="qtbase_it.qm">translations/qt/qtbase_it.qm</file>
+        <file alias="qtbase_tr.qm">translations/qt/qtbase_tr.qm</file>
+        <file alias="qtbase_ru.qm">translations/qt/qtbase_ru.qm</file>
+        <file alias="qtbase_ar.qm">translations/qt/qtbase_ar.qm</file>
+        <file alias="qtbase_zh_CN.qm">translations/qt/qtbase_zh_CN.qm</file>
+    </qresource>
+    <qresource prefix="/sounds">
+        <file>sounds/notification.wav</file>
+    </qresource>
     <qresource prefix="/styles">
-        <file>styles/app_styles.qss</file>
         <file>styles/app_styles_light.qss</file>
         <file>styles/app_styles_dark.qss</file>
         <file>styles/app_styles_font_large.qss</file>
         <file>styles/app_styles_font_medium.qss</file>
         <file>styles/app_styles_font_small.qss</file>
     </qresource>
-    <qresource prefix="/Login_icons">
-        <file>images/Login_Resources/user.png</file>
-        <file>images/Login_Resources/pass.png</file>
-        <file>images/Login_Resources/login.png</file>
-    </qresource>
-    <qresource prefix="/Backgrounds">
-        <file>images/Login_Resources/login_bg.png</file>
-        <file>images/Backgrounds/main_bg.png</file>
-        <file>images/Backgrounds/main_bg_caramel.png</file>
-        <file>images/Backgrounds/main_bg_black.png</file>
-        <file>images/Backgrounds/main_bg_blue.png</file>
-    </qresource>
     <qresource prefix="/Assets">
-        <file>images/Assets/discount.png</file>
-        <file>images/Assets/down_arrow.png</file>
+        <file>images/Assets/combo_chevron_down_dark.png</file>
+        <file>images/Assets/combo_chevron_down_light.png</file>
+        <file>images/Assets/combo_chevron_up_dark.png</file>
+        <file>images/Assets/combo_chevron_up_light.png</file>
+        <file>images/Assets/spin_plus_dark.png</file>
+        <file>images/Assets/spin_plus_light.png</file>
+        <file>images/Assets/spin_minus_dark.png</file>
+        <file>images/Assets/spin_minus_light.png</file>
+        <file>images/Assets/date_calendar_dark.png</file>
+        <file>images/Assets/date_calendar_light.png</file>
+        <file>images/Assets/chevron_down_dark.png</file>
+        <file>images/Assets/chevron_down_light.png</file>
         <file>images/Assets/logout.png</file>
         <file>images/Assets/notification_active.png</file>
         <file>images/Assets/notification.png</file>
         <file>images/Assets/product_default.png</file>
-        <file>images/Assets/up_arrow.png</file>
         <file>images/Assets/delete.png</file>
         <file>images/Assets/delete_black.png</file>
-        <file>images/Assets/discount_black.png</file>
-        <file>images/Assets/down_arrow_black.png</file>
         <file>images/Assets/logout_black.png</file>
-        <file>images/Assets/notification_active_black.png</file>
         <file>images/Assets/notification_black.png</file>
-        <file>images/Assets/up_arrow_black.png</file>
-        <file>images/Assets/refresh.png</file>
-        <file>images/Assets/refresh_black.png</file>
     </qresource>
     <qresource prefix="/Icons">
         <file>images/icons/tickets_icon_colored.png</file>
         <file>images/icons/financial_icon_colored.png</file>
         <file>images/icons/settings_icon_colored.png</file>
-        <file>images/icons/financial_icon.ico</file>
-        <file>images/icons/settings_icon.ico</file>
-        <file>images/icons/tickets_icon.ico</file>
         <file>images/icons/inventory_icon_colored.png</file>
-        <file>images/icons/inventory_icon.ico</file>
         <file>images/icons/register_icon_colored.png</file>
-        <file>images/icons/register_icon.ico</file>
+        <file>images/icons/launcher_icon.png</file>
     </qresource>
 </RCC>
